@@ -14,9 +14,17 @@
 # - A 2 GiB memory cap through a transient systemd scope. Without systemd it refuses to run unless
 #   CW_ALLOW_UNCAPPED=1 is set.
 #
-# What it does not do: HOME stays your real home, because Hermes finds its installed dependency
-# environment through it. Files under HOME stay readable. Absolute paths (/usr/bin/kubectl) bypass
-# the stubs. Use synthetic fixtures only.
+# - Optional pinned core: CW_HERMES_CORE=<hermes-agent checkout with a uv-synced .venv> puts that
+#   checkout's `hermes` first in PATH (after the stubs), drops ~/.local/bin from PATH and sets HOME to
+#   a scratch directory too. Use it when the installed Hermes is older than requires_hermes, or to
+#   test against an exact release. Set it up once (uv only, nothing global changes):
+#     git clone --filter=blob:none https://github.com/NousResearch/hermes-agent <dir>
+#     git -C <dir> checkout <release tag or commit>
+#     (cd <dir> && uv sync --locked --extra messaging --python 3.14)
+#
+# What it does not do without CW_HERMES_CORE: HOME stays your real home, because an installed Hermes
+# finds its dependency environment through it. Files under HOME stay readable. In both modes,
+# absolute paths (/usr/bin/kubectl) bypass the stubs. Use synthetic fixtures only.
 set -eu
 
 [ "$#" -ge 1 ] || { echo "usage: $0 <command> [args...]" >&2; exit 2; }
@@ -39,16 +47,30 @@ done
 exec '${REAL_GIT:-/bin/false}' "\$@"
 EOF
 chmod +x "$SCRATCH/stubbin/git"
+RUN_HOME=$HOME
+RUN_PATH="$SCRATCH/stubbin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+if [ -n "${CW_HERMES_CORE:-}" ]; then
+  case "$CW_HERMES_CORE" in
+    /*) ;;
+    *) echo "scratch-env: CW_HERMES_CORE must be an absolute path" >&2; exit 2 ;;
+  esac
+  case "$CW_HERMES_CORE" in *:*|*"'"*) echo "scratch-env: CW_HERMES_CORE contains ':' or a quote; refusing" >&2; exit 2 ;; esac
+  [ -x "$CW_HERMES_CORE/.venv/bin/hermes" ] || { echo "scratch-env: no $CW_HERMES_CORE/.venv/bin/hermes (run uv sync there first)" >&2; exit 2; }
+  RUN_HOME="$SCRATCH/userhome"
+  mkdir -p "$RUN_HOME"
+  RUN_PATH="$SCRATCH/stubbin:$CW_HERMES_CORE/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+  echo "scratch: pinned core $CW_HERMES_CORE ($(git -C "$CW_HERMES_CORE" rev-parse --short HEAD 2>/dev/null || echo unknown)), HOME=$RUN_HOME" >&2
+fi
 echo "scratch: $SCRATCH" >&2
 
 set -- env -i \
-  HOME="$HOME" \
+  HOME="$RUN_HOME" \
   HERMES_HOME="$SCRATCH/home" \
   HERMES_KANBAN_DB="$SCRATCH/kanban/kanban.db" \
   HERMES_KANBAN_BOARD=scratch \
   KUBECONFIG=/dev/null \
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=/bin/false \
-  PATH="$SCRATCH/stubbin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+  PATH="$RUN_PATH" \
   LANG=C.UTF-8 TERM=dumb TMPDIR="$SCRATCH/tmp" \
   ${XDG_RUNTIME_DIR:+XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"} \
   "$@"
