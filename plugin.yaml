@@ -4,7 +4,7 @@ description: >-
   Approved time windows for production changes by agents. A pre_tool_call guard blocks
   production-write tool calls (kubectl apply, helm upgrade, tofu apply, git push,
   PR merges, configured MCP tools) unless an owner-approved window for their scope is open.
-  Agents propose windows; the owner approves them (Telegram Mini App companion planned).
+  Agents propose windows; the owner approves, declines or closes them with Telegram buttons.
 author: Giorgio De Trane
 license: MIT
 homepage: https://github.com/Gdetrane/hermes-change-windows
@@ -40,6 +40,16 @@ config_schema:
     default: []
     label: Disabled default rules
     description: "Ids of default rules to turn off (self-protect cannot be turned off)."
+  approver_telegram_ids:
+    type: list
+    default: []
+    label: Approvers (Telegram user ids)
+    description: "Telegram user ids that may approve, decline and close windows and read /windows. Empty = nobody can approve."
+  owner_chat_id:
+    type: int
+    default: 0
+    label: Owner chat id
+    description: "Chat that gets proposal messages. 0 = the private chat of the first approver."
   max_window_hours:
     type: float
     default: 8

@@ -5,6 +5,9 @@ from change_windows.store import Store, StoreError
 H = 3600
 
 
+TIMED = ("remind", "start", "end")  # the announce effect of a proposal is tested on its own
+
+
 def mk(store, start, end, scope="k8s-prod", exclusive=True, presence=False):
     w, conflicts = store.propose(name="w", scope=scope, start_ts=start, end_ts=end, reason="r",
                                  proposed_by="agent:test", now=0, exclusive=exclusive, presence=presence)
@@ -63,13 +66,13 @@ def test_effects_claimed_once_across_store_instances(store, db_path):
     store.ensure_effects(w, reminder_s=600)
     store.ensure_effects(w, reminder_s=600)  # idempotent
     other = Store(lambda: sqlite3.connect(db_path, timeout=5))
-    first = store.claim_due_effects(now=1000)
-    second = other.claim_due_effects(now=1000)
+    first = store.claim_due_effects(now=1000, kinds=TIMED)
+    second = other.claim_due_effects(now=1000, kinds=TIMED)
     assert sorted(k for _, k, _ in first) == ["remind", "start"]
     assert second == []
     for wid, kind, _ in first:
         store.finish_effect(wid, kind, "ok", now=1001)
-    assert [k for _, k, _ in other.claim_due_effects(now=2000)] == ["end"]
+    assert [k for _, k, _ in other.claim_due_effects(now=2000, kinds=TIMED)] == ["end"]
 
 
 def test_audit_preview_is_capped(store):
@@ -119,14 +122,14 @@ def test_close_after_concurrent_approval_still_removes_permission(store):
 def test_effect_lease_survives_a_crash_and_is_bounded(store):
     w, _ = mk(store, 1000, 2000)
     store.ensure_effects(w, reminder_s=600)
-    first = store.claim_due_effects(now=1000, lease_s=300)
+    first = store.claim_due_effects(now=1000, lease_s=300, kinds=TIMED)
     assert sorted(k for _, k, _ in first) == ["remind", "start"]
-    assert store.claim_due_effects(now=1100, lease_s=300) == []          # lease still held
+    assert store.claim_due_effects(now=1100, lease_s=300, kinds=TIMED) == []          # lease still held
     store.finish_effect(w.id, "remind", "sent", now=1100)
-    again = store.claim_due_effects(now=1400, lease_s=300)               # crashed "start" is retried
+    again = store.claim_due_effects(now=1400, lease_s=300, kinds=TIMED)               # crashed "start" is retried
     assert [k for _, k, _ in again] == ["start"]
-    store.claim_due_effects(now=1800, lease_s=300)                       # attempt 3
-    assert store.claim_due_effects(now=2600, lease_s=300) == [(w.id, "end", 2000)]
+    store.claim_due_effects(now=1800, lease_s=300, kinds=TIMED)                       # attempt 3
+    assert store.claim_due_effects(now=2600, lease_s=300, kinds=TIMED) == [(w.id, "end", 2000)]
     assert store.failed_effects(1800, lease_s=300) == []                  # last lease still live
     assert (w.id, "start", 3) in store.failed_effects(2600, lease_s=300)
 
@@ -187,3 +190,15 @@ def test_purge_previews(store):
     assert store.purge_previews(before_ts=3) == 1
     assert [r["preview"] for r in store.audit_tail(2)] == ["newer preview", "[purged]"]
     assert store.purge_previews() == 1
+
+
+def test_a_proposal_queues_one_announce_effect(store):
+    w, _ = mk(store, 1000, 2000)
+    assert store.claim_due_effects(now=0, kinds=("announce",)) == [(w.id, "announce", 0)]
+    assert store.claim_due_effects(now=10, kinds=("announce",)) == []  # leased
+    store.finish_effect(w.id, "announce", "sent", now=11)
+    assert store.claim_due_effects(now=1000, kinds=("announce",)) == []
+    # an approved-at-creation window (emergency path) is not announced as a proposal
+    store.propose(name="e", scope="infra", start_ts=0, end_ts=600, reason="r", proposed_by="owner", now=0,
+                  state="approved", decided_by="telegram:1")
+    assert store.claim_due_effects(now=5000, kinds=("announce",)) == []

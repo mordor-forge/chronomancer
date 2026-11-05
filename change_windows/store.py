@@ -236,6 +236,11 @@ class Store:
                     (window_id, name, scope, start_ts, end_ts, int(exclusive), int(presence), state, kind,
                      reason, json.dumps(cards or []), proposed_by, decided_by,
                      now if decided_by else None, now))
+                if state == "pending":
+                    # Announce to the owner. Any process can propose (gateway, CLI chat, Kanban
+                    # worker); the gateway's scheduler sends the message, so it is queued here.
+                    conn.execute("INSERT OR IGNORE INTO effects (window_id, kind, due_ts) VALUES (?, 'announce', ?)",
+                                 (window_id, now))
         finally:
             conn.close()
         window = self.get(window_id)
@@ -334,17 +339,23 @@ class Store:
         finally:
             conn.close()
 
-    def claim_due_effects(self, now: int, *, lease_s: int = 300, max_attempts: int = 3) -> list[tuple[str, str, int]]:
+    def claim_due_effects(self, now: int, *, lease_s: int = 300, max_attempts: int = 3,
+                          kinds: Optional[Iterable[str]] = None) -> list[tuple[str, str, int]]:
         """Lease due, unfinished effects. A lease that is not finished within ``lease_s`` (crash,
         timeout) is claimed again, up to ``max_attempts``. This is at-least-once with bounded
         retries: a remote side effect (a message, a comment) can repeat after a crash between the
-        remote call and ``finish_effect``. Callers re-read current state before acting."""
+        remote call and ``finish_effect``. Callers re-read current state before acting.
+        ``kinds`` limits the claim to the effect kinds the caller can carry out."""
         claimed: list[tuple[str, str, int]] = []
+        sql = ("SELECT window_id, kind, due_ts FROM effects WHERE done_ts IS NULL AND due_ts <= ? "
+               "AND attempts < ? AND (claimed_ts IS NULL OR claimed_ts <= ?)")
+        params: list[Any] = [now, max_attempts, now - lease_s]
+        if kinds is not None:
+            kinds = tuple(kinds)
+            sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+            params.extend(kinds)
         with self._write() as conn:
-            due = conn.execute(
-                "SELECT window_id, kind, due_ts FROM effects WHERE done_ts IS NULL AND due_ts <= ? "
-                "AND attempts < ? AND (claimed_ts IS NULL OR claimed_ts <= ?) ORDER BY due_ts",
-                (now, max_attempts, now - lease_s)).fetchall()
+            due = conn.execute(sql + " ORDER BY due_ts", params).fetchall()
             for window_id, kind, due_ts in due:
                 conn.execute("UPDATE effects SET claimed_ts = ?, attempts = attempts + 1 "
                              "WHERE window_id = ? AND kind = ?", (now, window_id, kind))

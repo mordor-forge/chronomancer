@@ -1,13 +1,15 @@
 """change-windows: approved time windows for production writes by Hermes agents.
 
-Skeleton wiring (build day 1 state):
+Wiring:
 - ``pre_tool_call`` guard: matched production-write calls need an open window for their scope.
 - Agent tools: window_propose, window_list, window_next, window_close.
+- Telegram (``register_platform_handler``, in-process only): proposal messages with Approve /
+  Decline, Close now, ``/windows``; one scheduler task per profile (``spawn_task``) that sends the
+  proposal messages.
 
-Planned (see SPEC "Build plan"; not registered yet, so the manifest stays truthful):
-- Telegram: approval buttons, /windows command and the Mini App (register_platform_handler).
-- Scheduler: reminders, card release at start, miss report (spawn_task + on_kanban_dispatch_tick).
-- CLI: ``hermes change-windows list`` (read-only; approvals stay in Telegram).
+Planned (not registered yet, so the manifest stays truthful):
+- Scheduler: card release at start and notices at start and end.
+- Mini App (loopback HTTP server started from the Telegram factory).
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from .change_windows import guard, rules, tools
+from .change_windows import guard, rules, tg, tools
 from .change_windows.store import Store
 
 logger = logging.getLogger(__name__)
@@ -69,7 +71,7 @@ class _RuleCache:
 
 
 def register(ctx: Any) -> None:
-    from plugins.plugin_storage import plugin_db
+    from plugins.plugin_storage import plugin_data_dir, plugin_db
 
     store = Store(lambda: plugin_db(PLUGIN_NAME))
     rule_cache = _RuleCache(ctx)
@@ -84,7 +86,8 @@ def register(ctx: Any) -> None:
     def tz() -> Any:
         return _local_tz(setting("timezone", None))
 
-    agent_tools = tools.Tools(store, settings=setting, tz=tz, actor=lambda: f"agent:{ctx.profile_name}")
+    agent_tools = tools.Tools(store, settings=setting, tz=tz, actor=lambda: f"agent:{ctx.profile_name}",
+                              on_proposed=lambda _window, _conflicts: tg.wake_all())
     for schema, handler in (
         (tools.PROPOSE, agent_tools.propose),
         (tools.LIST, agent_tools.list),
@@ -96,3 +99,15 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_tool_call", guard.make_hook(
         get_rules=rule_cache.get, get_mode=mode, store=store, tz=tz,
         command_preview=lambda: setting("audit_command_preview", False) is True))
+
+    # Telegram: needs the native Application, so in-process plugins only. Under
+    # plugins.isolation: host (or on a core without the seam) the guard and the tools still work.
+    factory = tg.make_factory(
+        key=lambda: str(plugin_data_dir(PLUGIN_NAME)),
+        actions=tg.Actions(store, setting=setting, tz=tz),
+        spawn=lambda coro, name: ctx.spawn_task(coro, name=name))
+    try:
+        ctx.register_platform_handler("telegram", factory)
+    except Exception as exc:
+        logger.warning("change-windows: Telegram approvals and the scheduler are off (%s). The guard and the "
+                       "agent tools still work; the Telegram parts need plugins.isolation: in_process.", exc)

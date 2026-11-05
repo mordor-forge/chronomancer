@@ -2,8 +2,9 @@
 
 Approved time windows for production changes made by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-> Status: **skeleton** (0.1.0-dev0). The guard and the four agent tools work and are tested.
-> The Telegram approval flow, the Mini App and the scheduler are planned (see "Roadmap").
+> Status: **in development** (0.1.0-dev0). The guard, the four agent tools and the Telegram
+> buttons (approve, decline, close, `/windows`) work and are tested. Card release at window start
+> and the Mini App are planned (see "Roadmap").
 
 ## Why
 
@@ -23,8 +24,8 @@ how to ask for one.
 2. **Windows** have a scope, a start and an end, and can be exclusive (no overlap in the scope)
    or shared.
 3. **Agents propose, owners approve.** `window_propose` stores a pending window and reports
-   overlaps. No tool can approve. Approval needs the owner: a Telegram button or the Mini App,
-   from an allow-listed Telegram user id (planned). There is no CLI approval.
+   overlaps. No tool can approve. Approval needs the owner: a Telegram button from an
+   allow-listed Telegram user id. There is no CLI approval.
 4. **The guard** checks every tool call against the rules. An unmatched call costs one regular
    expression pass and never touches the store. A matched call needs an open window for every
    scope it touches; otherwise it is blocked. If the store fails, a matched call is blocked
@@ -40,6 +41,23 @@ how to ask for one.
 | `window_next` | Is a window open now for a scope? If not, the next one and pending proposals. |
 | `window_close` | Close an open window early, or withdraw a pending proposal. |
 
+## Telegram
+
+When the gateway connects to Telegram, the plugin adds its own buttons and one command to the
+gateway's bot. It needs no bot token of its own.
+
+- **Proposal message.** Each new proposal goes to the owner chat: name, scope, time, reason,
+  linked cards, overlaps, and the buttons **Approve** and **Decline**. Proposals from any process
+  of the profile (gateway chat, CLI chat, Kanban workers) are queued in the plugin database; the
+  gateway sends them within about 10 seconds.
+- **Close now.** An approved window's message has a **Close now** button. Matched calls are
+  blocked again from the next call on.
+- **`/windows`.** Today's and tomorrow's windows, with overlaps.
+- **Who can act.** Only the Telegram user ids in `approver_telegram_ids`. Empty means nobody. Other
+  users get "Only an approver can do this" on a button and no answer to `/windows`. A stale button
+  (an old message) is checked against the current state and redrawn.
+- Messages are plain text, so agent-written names and reasons cannot add formatting or links.
+
 ## Settings
 
 `plugins.entries.change-windows.settings` in `config.yaml`:
@@ -50,6 +68,8 @@ how to ask for one.
 | `timezone` | system zone | IANA zone for times without an offset. |
 | `rules` | `[]` | Extra rules: `{id, scope, tools: [fnmatch], match: regex, field: command\|code\|*}`. |
 | `disabled_rules` | `[]` | Default rule ids to turn off. `self-protect` cannot be turned off. |
+| `approver_telegram_ids` | `[]` | Telegram user ids that may approve, decline and close windows and read `/windows`. Empty = nobody. |
+| `owner_chat_id` | `0` | Chat that gets proposal messages. `0` = the private chat of the first approver. |
 | `max_window_hours` | `8` | Longest window an agent may propose. |
 | `audit_command_preview` | `false` | Store a masked preview of matched `terminal` commands. Masking is best effort. |
 
@@ -96,8 +116,9 @@ line.
   are not parsed); disable `git-push` and add a narrower rule if your agent pushes feature branches.
   `kubectl exec` counts as a write. A resource named `delete` in `kubectl get configmap delete` is
   blocked. Turn rules off with `disabled_rules`.
-- **Timed effects will be at-least-once (planned scheduler).** A message or card comment can repeat
-  after a crash; a release is re-checked against the window and the card state before it runs.
+- **Timed effects are at least once.** A proposal message (and, when built, a card comment) can
+  repeat after a crash; a failed send is retried after 2 minutes, at most 3 times. A release
+  (planned) is re-checked against the window and the card state before it runs.
 - **Admission only.** Closing a window blocks later calls; it does not stop a command that already
   started.
 
@@ -110,11 +131,12 @@ line.
   characters are omitted); masking is best effort, so a secret can remain. Turning the setting off
   does not clean old rows: purge them (planned owner action; `Store.purge_previews()` today) and
   remember that SQLite and backups can keep old pages. Treat the database as sensitive.
-- **Network:** none in the skeleton. Planned: messages to the owner through the gateway's own
-  Telegram bot, and a Mini App page that loads Telegram's `telegram-web-app.js` in the Telegram
-  client.
-- **Background work:** none in the skeleton. Planned: one supervised task in the gateway (timers)
-  and one HTTP listener on `127.0.0.1` for the Mini App, which you publish yourself.
+- **Network:** messages to the configured owner chat, and answers to button presses and
+  `/windows`, through the gateway's own Telegram bot. Planned: a Mini App page that loads
+  Telegram's `telegram-web-app.js` in the Telegram client.
+- **Background work:** inside the gateway, when Telegram connects: one supervised task per profile
+  (`ctx.spawn_task`) that sends proposal messages. Planned: one HTTP listener on `127.0.0.1` for the
+  Mini App, which you publish yourself.
 - **Credentials:** the plugin reads none and asks for none. The planned Mini App verifies Telegram
   `initData` with Telegram's published Ed25519 key and the public bot id, so the plugin never holds
   the bot token. (An opted-in command preview can contain a secret that masking missed.)
@@ -124,7 +146,7 @@ line.
 
 ## Roadmap
 
-- Telegram: approve / decline / close buttons, `/windows`. Later: reminders, check-in.
+- Telegram: notices at window start and end. Later: reminders, check-in.
 - Mini App: a list of windows with overlap badges, approve / decline / close, recent audit rows.
   Later: timeline lanes, emergency window.
 - Scheduler: release linked Kanban cards at start and comment on them. Later: miss report.
@@ -133,10 +155,14 @@ line.
 ## Development
 
 ```bash
-cd tests && uv run --no-project --with 'pytest>=8,<9' --with 'cryptography>=42,<51' --with 'pyyaml>=6,<7' python -m pytest -q
+cd tests && uv run --no-project --with 'pytest>=8,<9' --with 'cryptography>=42,<51' --with 'pyyaml>=6,<7' \
+  --with 'python-telegram-bot>=22,<23' python -m pytest -q
 cd .. && dev/scratch-env.sh hermes plugins doctor . --ci
 dev/scratch-env.sh hermes plugins validate . --install-deps
 ```
+
+The Telegram tests use real python-telegram-bot objects with an offline fake Bot API (no
+network, no token); without `python-telegram-bot` they are skipped.
 
 `dev/scratch-env.sh` runs a command with a throwaway `HERMES_HOME` and Kanban DB, a clean
 environment, `KUBECONFIG=/dev/null`, stub cluster and forge CLIs first in `PATH`, a `git` that
