@@ -78,7 +78,7 @@ def register(ctx: Any) -> None:
         return ctx.get_config(key, default=default)
 
     def mode() -> str:
-        value = str(setting("mode", "warn")).strip().lower()
+        value = str(setting("mode", "enforce")).strip().lower()
         return value if value in guard.MODES else "enforce"  # an unknown value fails closed
 
     def tz() -> Any:

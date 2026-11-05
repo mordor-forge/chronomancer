@@ -46,7 +46,7 @@ how to ask for one.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mode` | `warn` (skeleton) | `enforce` blocks; `warn` records and allows, except `self-protect` hits, which always block; `off` disables the guard. |
+| `mode` | `enforce` | `enforce` blocks; `warn` records and allows, except `self-protect` hits, which always block; `off` disables the guard. |
 | `timezone` | system zone | IANA zone for times without an offset. |
 | `rules` | `[]` | Extra rules: `{id, scope, tools: [fnmatch], match: regex, field: command\|code\|*}`. |
 | `disabled_rules` | `[]` | Default rule ids to turn off. `self-protect` cannot be turned off. |

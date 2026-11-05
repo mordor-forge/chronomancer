@@ -22,7 +22,7 @@ config_schema:
   mode:
     type: str
     choices: [enforce, warn, "off"]
-    default: warn
+    default: enforce
     label: Guard mode
     description: "enforce blocks matched calls outside a window; warn only records them; off disables the guard."
   timezone:
