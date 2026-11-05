@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -129,10 +129,20 @@ class Store:
         conn.execute("PRAGMA busy_timeout = 5000")
         if not self._ready:
             conn.executescript(_SCHEMA)
-            conn.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+            self._migrate(conn)
+            conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             conn.commit()
             self._ready = True
         return conn
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """v1 -> v2: leased effects. Adds columns in place; never drops data."""
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(effects)")}
+        if "claimed_ts" not in cols:
+            conn.execute("ALTER TABLE effects ADD COLUMN claimed_ts INTEGER")
+        if "attempts" not in cols:
+            conn.execute("ALTER TABLE effects ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
@@ -323,12 +333,12 @@ class Store:
             conn.execute("UPDATE effects SET done_ts = ?, result = ? WHERE window_id = ? AND kind = ?",
                          (now, result[:400], window_id, kind))
 
-    def failed_effects(self, *, max_attempts: int = 3) -> list[tuple[str, str, int]]:
-        """Effects that used every attempt without finishing: report them to the owner."""
+    def failed_effects(self, now: int, *, lease_s: int = 300, max_attempts: int = 3) -> list[tuple[str, str, int]]:
+        """Effects that used every attempt and whose last lease expired unfinished: report them."""
         conn = self._conn()
         try:
             return [tuple(r) for r in conn.execute(
-                "SELECT window_id, kind, attempts FROM effects WHERE done_ts IS NULL AND attempts >= ?",
-                (max_attempts,)).fetchall()]
+                "SELECT window_id, kind, attempts FROM effects WHERE done_ts IS NULL AND attempts >= ? "
+                "AND claimed_ts <= ?", (max_attempts, now - lease_s)).fetchall()]
         finally:
             conn.close()

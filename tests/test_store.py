@@ -127,4 +127,21 @@ def test_effect_lease_survives_a_crash_and_is_bounded(store):
     assert [k for _, k, _ in again] == ["start"]
     store.claim_due_effects(now=1800, lease_s=300)                       # attempt 3
     assert store.claim_due_effects(now=2600, lease_s=300) == [(w.id, "end", 2000)]
-    assert (w.id, "start", 3) in store.failed_effects(max_attempts=3)
+    assert store.failed_effects(1800, lease_s=300) == []                  # last lease still live
+    assert (w.id, "start", 3) in store.failed_effects(2600, lease_s=300)
+
+
+
+def test_v1_database_is_migrated_in_place(db_path):
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE effects (window_id TEXT NOT NULL, kind TEXT NOT NULL, due_ts INTEGER NOT NULL,
+                              done_ts INTEGER, result TEXT, PRIMARY KEY (window_id, kind));
+        INSERT INTO effects VALUES ('WOLD', 'start', 10, NULL, NULL);
+    """)
+    conn.commit()
+    conn.close()
+    s = Store(lambda: sqlite3.connect(db_path, timeout=5))
+    assert s.claim_due_effects(now=100) == [("WOLD", "start", 10)]

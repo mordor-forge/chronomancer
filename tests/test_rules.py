@@ -36,14 +36,14 @@ def test_k8s_reads_do_not_match(cmd):
     ("terraform destroy", "iac-apply"),
     ("argocd app sync web", "argocd-write"),
     ("git push origin main", "git-push"),
-    ("git push --force origin feature", "git-push-force"),
+    ("git push --force origin feature", "git-push"),
     ("gh pr merge 42 --squash", "pr-merge"),
 ])
 def test_other_writes(cmd, rule):
     assert rule in ids("terminal", command=cmd)
 
 
-@pytest.mark.parametrize("cmd", ["git push origin feature/x", "helm list", "tofu plan", "gh pr view 42"])
+@pytest.mark.parametrize("cmd", ["git status", "git log --oneline", "helm list", "tofu plan", "gh pr view 42"])
 def test_other_reads(cmd):
     assert ids("terminal", command=cmd) == []
 
@@ -74,18 +74,28 @@ def test_mcp_rule_by_tool_name():
 
 
 
-@pytest.mark.parametrize("cmd,expected", [
-    ("git push", ["git-push"]),
-    ("git push origin", ["git-push"]),
-    ("git push origin main", ["git-push"]),
-    ("git push origin feature:main", ["git-push"]),
-    ("git push -u origin feature/x", []),
-    ("git push origin feature/x && echo ok", []),
-    ("git push --force origin feature/x", ["git-push-force"]),
-    ("git push origin :old-branch", ["git-push-force"]),
+@pytest.mark.parametrize("cmd", [
+    "git push",
+    "git push origin main",
+    "git push -u origin feature/x",
+    "git push origin feature && git push origin main",
+    "echo 'git push origin feature'; git push origin main",
+    "git push --all origin",
+    "git push origin HEAD",
+    "git push origin +feature:feature",
+    "git push origin :old-branch",
 ])
-def test_git_push_matrix(cmd, expected):
-    assert ids("terminal", command=cmd) == sorted(expected)
+def test_every_git_push_needs_a_window(cmd):
+    assert ids("terminal", command=cmd) == ["git-push"]
+
+
+def test_unless_is_evaluated_per_segment():
+    rs = build_ruleset([{"id": "push-main", "scope": "s", "tools": ["terminal"],
+                         "match": r"\bgit\b[^\n|;&]*?\bpush\b", "unless": r"\bpush\s+origin\s+feature\b"}],
+                       include_defaults=False)
+    assert not rs.match("terminal", {"command": "git push origin feature"})
+    assert rs.match("terminal", {"command": "git push origin feature && git push origin main"})
+    assert rs.match("terminal", {"command": "git push origin main; git push origin feature"})
 
 
 @pytest.mark.parametrize("cmd", [
@@ -105,6 +115,7 @@ def test_kubectl_exec_is_its_own_rule():
 @pytest.mark.parametrize("code", [
     "subprocess.run(['git','push','origin','main'])",
     "os.system('gh pr merge 42 --squash')",
+    "subprocess.run([\"git\"," + " " * 300 + "\"push\", \"origin\", \"main\"])",
 ])
 def test_code_git(code):
     assert "code-git" in ids("execute_code", code=code)
@@ -112,9 +123,11 @@ def test_code_git(code):
 
 @pytest.mark.parametrize("tool,args", [
     ("terminal", {"command": "hermes 'change-windows' approve W1"}),
+    ("terminal", {"command": "hermes change-windows reset"}),
     ("terminal", {"command": "hermes plugins disable change-windows"}),
     ("terminal", {"command": "hermes config set plugins.entries.change-windows.settings.mode off"}),
     ("write_file", {"path": "/home/u/.hermes/config.yaml", "content": "plugins:\n  entries:\n    change-windows: {}"}),
+    ("patch", {"path": "/home/u/.hermes/profiles/p/config.yaml", "old_string": "change-windows:", "new_string": "x:"}),
     ("terminal", {"command": "sqlite3 ~/.hermes/plugin-data/change-windows/data.db 'delete from audit'"}),
 ])
 def test_self_protect_variants(tool, args):
@@ -124,6 +137,9 @@ def test_self_protect_variants(tool, args):
 def test_self_protect_does_not_block_work_on_the_repo():
     assert ids("terminal", command="cd ~/work/hermes-change-windows && git status") == []
     assert ids("read_file", path="/home/u/.hermes/plugin-data/change-windows/data.db") == []
+    assert ids("terminal", command="hermes change-windows list") == []
+    assert ids("write_file", path="/work/hermes-change-windows/tests/fixtures/config.yaml",
+               content="plugins: {entries: {change-windows: {}}}") == []
 
 
 def test_mcp_rule_by_tool_name_patterns():

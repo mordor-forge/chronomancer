@@ -93,4 +93,6 @@ def register(ctx: Any) -> None:
     ):
         ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=handler, emoji="🕒")
 
-    ctx.register_hook("pre_tool_call", guard.make_hook(get_rules=rule_cache.get, get_mode=mode, store=store, tz=tz))
+    ctx.register_hook("pre_tool_call", guard.make_hook(
+        get_rules=rule_cache.get, get_mode=mode, store=store, tz=tz,
+        command_preview=lambda: setting("audit_command_preview", False) is True))

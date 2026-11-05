@@ -79,6 +79,10 @@ def test_self_protect_blocks_in_warn_mode(store):
 def test_redaction_cases():
     synthetic = "s3cr3t-synthetic value"
     cases = [
+        'kubectl apply --password="prefix\\" s3cr3t-synthetic value" -f x',
+        'echo "{\\"password\\":\\"s3cr3t-synthetic value\\"}" | kubectl apply -f -',
+        "helm upgrade app ./chart --set key=s3cr3t-synthetic",
+        "mysql -p s3cr3t-synthetic -e 'select 1'",
         f'kubectl create secret generic x --from-literal=password="{synthetic}"',
         "curl -H 'Authorization: Bearer s3cr3t-synthetic-token' https://x",  # gitleaks:allow (synthetic)
         f'echo {{"password": "{synthetic}"}} | kubectl apply -f -',
@@ -88,6 +92,28 @@ def test_redaction_cases():
     for c in cases:
         out = guard.redact(c)
         assert "s3cr3t" not in out and "synthetic value" not in out and "AAAAAAAA" not in out, out
+
+
+def test_redaction_is_bounded_in_time():
+    import time as _t
+    start = _t.monotonic()
+    guard.redact("kubectl apply " + "a" * 200_000)
+    assert _t.monotonic() - start < 0.5
+
+
+def test_default_audit_stores_no_command_text(store):
+    hook = guard.make_hook(get_rules=lambda: RS, get_mode=lambda: "enforce", store=store, clock=lambda: 100)
+    hook(tool_name="terminal", args={"command": "TOKEN=s3cr3t kubectl apply -f x"})
+    row = store.audit_tail(1)[0]
+    assert "s3cr3t" not in row["preview"] and "kubectl" not in row["preview"] and row["rule_ids"]
+
+
+def test_opt_in_command_preview_is_masked(store):
+    hook = guard.make_hook(get_rules=lambda: RS, get_mode=lambda: "enforce", store=store, clock=lambda: 100,
+                           command_preview=lambda: True)
+    hook(tool_name="terminal", args={"command": "kubectl apply -f x --token=s3cr3t"})
+    row = store.audit_tail(1)[0]
+    assert "kubectl apply" in row["preview"] and "s3cr3t" not in row["preview"]
 
 
 def test_preview_never_stores_code_or_non_terminal_values():

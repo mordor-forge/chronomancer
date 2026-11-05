@@ -13,15 +13,18 @@ from .store import Store, Window
 
 MODES = ("enforce", "warn", "off")
 
-# Masking for the audit preview. Best effort: treat a stored preview as sensitive anyway.
-_SENSITIVE = r"(?:token|password|passwd|pwd|secret|api[-_]?key|apikey|auth|authorization|credential|private[-_]?key)"
+# Masking for the OPT-IN command preview (setting audit_command_preview). Best effort only: a
+# stored preview can still hold a secret. The default audit row stores no argument values.
+_REDACT_INPUT_CAP = 2000
+_SENSITIVE = r"(?:token|password|passwd|pwd|secret|api[-_]?key|apikey|key|auth|authorization|credential|private[-_]?key)"
+_QVAL = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)"""
 _MASKS = [
     # Authorization: Bearer x / Basic x
     re.compile(r"(?i)\b((?:bearer|basic)\s+)\S+"),
-    # "password": "x y"  /  'token': 'x'  (JSON / Python literals)
-    re.compile(rf"""(?i)(["']?[\w.-]*{_SENSITIVE}[\w.-]*["']?\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)"""),
-    # --password "x y" / --token=x / -p x
-    re.compile(rf"""(?i)(--?[\w-]*{_SENSITIVE}[\w-]*(?:=|\s+))("[^"]*"|'[^']*'|\S+)"""),
+    # "password": "x y" / token=x / --set db.password='x' (JSON, assignments; escaped quotes handled)
+    re.compile(rf"""(?i)((?<![\w-])[\\"']*[\w.-]{{0,40}}{_SENSITIVE}[\w.-]{{0,40}}[\\"']*\s*[:=]\s*){_QVAL}"""),
+    # --password "x y" / --token x / -p x
+    re.compile(rf"""(?i)((?<![\w-])(?:--?[\w-]{{0,40}}{_SENSITIVE}[\w-]{{0,40}}|-p)(?:=|\s+)){_QVAL}"""),
 ]
 _TOKEN_SHAPES = re.compile(
     r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]+|sk-[A-Za-z0-9_-]{16,}|"
@@ -29,6 +32,9 @@ _TOKEN_SHAPES = re.compile(
 
 
 def redact(text: str) -> str:
+    """Mask common secret shapes. Input is capped first so a long argument cannot stall the guard."""
+    if len(text) > _REDACT_INPUT_CAP:
+        text = text[:_REDACT_INPUT_CAP] + " [truncated]"
     for pat in _MASKS:
         text = pat.sub(lambda m: m.group(1) + "[masked]", text)
     return _TOKEN_SHAPES.sub("[masked]", text)
@@ -48,13 +54,15 @@ class Decision:
         return None
 
 
-def preview(tool_name: str, args: dict[str, Any]) -> str:
-    """Audit preview: the masked shell line for ``terminal``; names only for every other tool."""
+def preview(tool_name: str, args: dict[str, Any], *, include_command: bool = False) -> str:
+    """Audit preview. Default: metadata only (no argument values). Opt-in: the masked shell line."""
     if tool_name == "terminal":
-        return redact(extract_text(args, "command"))[:400]
+        command = extract_text(args, "command")
+        if include_command:
+            return redact(command)[:400]
+        return f"terminal: {len(command)} chars (command not stored)"
     if tool_name == "execute_code":
-        code = extract_text(args, "code")
-        return f"execute_code: {len(code)} chars of code (not stored)"
+        return f"execute_code: {len(extract_text(args, 'code'))} chars of code (not stored)"
     return f"{tool_name}: args {sorted(args)[:12]} (values not stored)"
 
 
@@ -128,6 +136,7 @@ def make_hook(
     store: Store,
     tz: Callable[[], Any] = lambda: None,
     clock: Callable[[], float] = time.time,
+    command_preview: Callable[[], bool] = lambda: False,
 ) -> Callable[..., Optional[dict[str, str]]]:
     """Build the ``pre_tool_call`` callback. Never raises for a matched call: it blocks instead."""
 
@@ -149,7 +158,7 @@ def make_hook(
                 store.record_audit(
                     now=now, verdict={"block": "blocked", "warn": "warned"}.get(decision.verdict, "allowed"),
                     tool=tool_name, rule_ids=decision.rule_ids, scopes=decision.scopes,
-                    window_id=decision.window_id, preview=preview(tool_name, args),
+                    window_id=decision.window_id, preview=preview(tool_name, args, include_command=bool(command_preview())),
                     session_id=session_id or "", task_id=task_id or "")
             except Exception:
                 pass  # the audit row is best effort; the verdict is not

@@ -22,6 +22,7 @@ SELF_SCOPE = "_self"
 _SEG = r"[^\n|;&]*?"
 
 
+_SEGMENTS = re.compile(r"[\n|;&]+")
 _QUOTES = re.compile(r"[\\\"'`]")
 
 
@@ -51,10 +52,11 @@ class Rule:
         text = normalize(extract_text(args, self.field))
         if not text or self.pattern.search(text) is None:
             return False
-        return self.unless is None or self.unless.search(text) is None
+        if self.unless is None:
+            return True
+        # An exception applies per command segment: one safe segment never cancels another.
+        return any(self.pattern.search(seg) and not self.unless.search(seg) for seg in _SEGMENTS.split(text))
 
-
-_PROTECTED = r"(?:main|master|prod|production)"
 
 DEFAULT_RULES: list[dict[str, Any]] = [
     {
@@ -94,21 +96,12 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "description": "infrastructure-as-code apply / destroy",
     },
     {
-        "id": "git-push-force",
-        "scope": "gitops-merge",
-        "tools": ["terminal"],
-        "match": rf"\bgit\b{_SEG}\bpush\b{_SEG}(--force\b|--force-with-lease\b|\s-f\b|--mirror\b|--delete\b|\s:\S)",
-        "description": "forced, mirroring or deleting git push",
-    },
-    {
         "id": "git-push",
         "scope": "gitops-merge",
         "tools": ["terminal"],
         "match": rf"\bgit\b{_SEG}\bpush\b",
-        # Allowed without a window: an explicit remote plus one branch that is not protected.
-        "unless": rf"\bgit\b{_SEG}\bpush\s+(?:-[\w-]+(?:=\S+)?\s+)*[\w.@/-]+\s+"
-                  rf"(?![^\s|;&]*\b{_PROTECTED}\b)[^\s|;&-][^\s|;&]*\s*(?:$|[|;&\n])",
-        "description": "git push to a protected branch, or with no explicit branch (the upstream may be protected)",
+        "description": "every git push (v0.1 policy: refspecs, upstreams and wildcards are not parsed); "
+                       "disable it and add a narrower rule if your agent pushes feature branches",
     },
     {
         "id": "pr-merge",
@@ -139,8 +132,8 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "scope": "gitops-merge",
         "tools": ["execute_code"],
         "field": "code",
-        "match": r"\bgit\b[\s\S]{0,200}?\bpush\b|\b(gh|tea|glab)\b[\s\S]{0,200}?\bmerge\b",
-        "description": "code that pushes with git or merges a PR (opaque: any use counts)",
+        "match": r"\bgit\b[\s\S]*\bpush\b|\b(gh|tea|glab)\b[\s\S]*\bmerge\b",
+        "description": "code that names git and push, or a forge CLI and merge, anywhere (opaque)",
     },
     {
         "id": "self-protect",
@@ -148,9 +141,10 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "tools": ["terminal", "execute_code", "write_file", "patch"],
         "field": "*",
         "match": r"plugin-data[/\\]+change-windows|plugins\.entries\.change-windows|"
-                 r"\bhermes\s+(?:-\S+\s+)*change-windows\b|"
+                 r"\bhermes\s+(?:-\S+\s+)*change-windows\s+(?!(?:list|show|status|help)\b)\w|"
                  r"\bhermes\s+plugins\s+(?:disable|remove|uninstall|update|install)\s+(?:\S+\s+)*change-windows\b|"
-                 r"config\.ya?ml[\s\S]*\bchange-windows\b|\bchange-windows\b[\s\S]*config\.ya?ml",
+                 r"\.hermes[/\\][^\s,]*config\.ya?ml[\s\S]*\bchange-windows\b|"
+                 r"\bchange-windows\b[\s\S]*\.hermes[/\\][^\s,]*config\.ya?ml",
         "description": "the plugin's own store, settings and plugin state",
     },
 ]
