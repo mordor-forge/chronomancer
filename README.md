@@ -16,9 +16,10 @@ how to ask for one.
 ## How it works
 
 1. **Rules** say which tool calls are production writes and which **scope** they need
-   (`k8s-prod`, `gitops-merge`, `infra`, or your own). Defaults cover `kubectl`/`oc` writes,
-   `helm` releases, `argocd app sync`, `tofu`/`terraform`/`pulumi` apply, protected or forced
-   `git push`, and `gh`/`tea`/`glab` PR merges. You can add rules for MCP tools by name.
+   (`k8s-prod`, `gitops-merge`, `infra`, or your own). Defaults cover `kubectl`/`oc` writes and
+   remote execution (`exec`, `cp`, `debug`, `run`), `helm` releases, `argocd app sync`,
+   `tofu`/`terraform`/`pulumi` apply, `git push` (protected branch, forced, or no explicit branch),
+   and `gh`/`tea`/`glab` PR merges. You can add rules for MCP tools by name.
 2. **Windows** have a scope, a start and an end, and can be exclusive (no overlap in the scope)
    or shared. A window can require the owner to check in before it opens.
 3. **Agents propose, owners approve.** `window_propose` stores a pending window and reports
@@ -51,16 +52,20 @@ how to ask for one.
 | `disabled_rules` | `[]` | Default rule ids to turn off. `self-protect` cannot be turned off. |
 | `max_window_hours` | `8` | Longest window an agent may propose. |
 
-Example rule for an MCP server:
+Example rule for an MCP server (match write tools by name; no `match` = any call of those tools):
 
 ```yaml
 rules:
   - id: mcp-k8s-write
     scope: k8s-prod
-    tools: ["mcp__kubernetes__*"]
-    match: "(create|delete|patch|apply|scale)"
-    field: "*"
+    tools: ["mcp__kubernetes__*delete*", "mcp__kubernetes__*create*",
+            "mcp__kubernetes__*apply*", "mcp__kubernetes__*patch*", "mcp__kubernetes__*scale*"]
 ```
+
+Rule fields: `match` (regex that must hit), `unless` (regex that cancels a hit), `field`
+(`command`, `code` or `*` for all arguments). Quotes and backslashes are removed before matching,
+so `"kubectl" 'apply'` counts as `kubectl apply`. A command segment ends at `|`, `;`, `&` or a new
+line.
 
 ## Limits (read before you rely on it)
 
@@ -76,19 +81,34 @@ rules:
   types in a terminal.
 - **Per profile.** Windows live in the profile's plugin data. Enable the plugin in every profile
   that can reach production.
+- **Not an identity boundary.** Code that runs as your OS user can edit Hermes's config or the
+  plugin's database. The `self-protect` rule blocks the obvious agent attempts (the plugin's data
+  path, `hermes change-windows`, `hermes plugins disable change-windows`, config edits that name
+  `change-windows`), also in warn mode, but it is a regex too. Approval is only through Telegram
+  from an allow-listed user id, never through a CLI an agent could drive.
+- **Conservative on purpose.** `git push` with no explicit branch counts as a protected push (the
+  upstream may be `main`). `kubectl exec` counts as a write. A resource named `delete` in
+  `kubectl get configmap delete` is blocked. Turn rules off with `disabled_rules`.
+- **Timed effects are at-least-once.** A reminder or card comment can repeat after a crash; a
+  release is re-checked against the window and the card state before it runs.
+- **Admission only.** Closing a window blocks later calls; it does not stop a command that already
+  started.
 
 ## Disclosure
 
-- **Reads:** the arguments of every tool call, to match rules. A masked preview (400 characters)
-  of matched calls is stored in the plugin's own SQLite database under
-  `<HERMES_HOME>/plugin-data/change-windows/`.
+- **Reads:** the arguments of every tool call, to match rules. For matched `terminal` calls a
+  masked preview of the command (400 characters) is stored in the plugin's own SQLite database
+  under `<HERMES_HOME>/plugin-data/change-windows/`; for other tools only the tool name and
+  argument names. Masking is best effort: treat the database as sensitive.
 - **Network:** none in the skeleton. Planned: messages to the owner through the gateway's own
   Telegram bot, and a Mini App page that loads Telegram's `telegram-web-app.js` in the Telegram
   client.
 - **Background work:** none in the skeleton. Planned: one supervised task in the gateway (timers)
   and one HTTP listener on `127.0.0.1` for the Mini App, which you publish yourself.
-- **Credentials:** none. The planned Mini App verifies Telegram `initData` with Telegram's
-  published Ed25519 key and the public bot id, so the plugin never holds the bot token.
+- **Credentials:** none stored by the plugin. The planned Mini App verifies Telegram `initData` with
+  Telegram's published Ed25519 key and the public bot id, so the plugin never holds the bot token.
+- **Plugin isolation:** the Telegram parts need `plugins.isolation: in_process` (the default). Under
+  `host` isolation the guard and the tools work; Telegram, the Mini App and timers are off.
 - **Shell commands:** none.
 
 ## Roadmap
@@ -96,15 +116,19 @@ rules:
 - Telegram: approve/decline buttons on proposals, `/windows`, reminders, check-in.
 - Mini App: day/week timeline with conflicts, approve/decline, emergency window, close now, audit log.
 - Scheduler: release linked Kanban cards at start, comment on them, miss report when a window passes unused.
-- CLI: `hermes change-windows list|approve` (approve only on a real TTY).
+- CLI: `hermes change-windows list` (read-only; approvals stay in Telegram).
 
 ## Development
 
 ```bash
 cd tests && uv run --no-project --with 'pytest>=8,<9' --with 'cryptography>=42,<51' --with 'pyyaml>=6,<7' python -m pytest -q
-hermes plugins doctor . --ci
-hermes plugins validate . --install-deps
+cd .. && dev/scratch-env.sh hermes plugins doctor . --ci
+dev/scratch-env.sh hermes plugins validate . --install-deps
 ```
+
+`dev/scratch-env.sh` runs a command with a throwaway `HERMES_HOME` and Kanban DB, a clean
+environment, `KUBECONFIG=/dev/null`, stub cluster and forge CLIs first in `PATH`, and a memory cap.
+Use it for every integration test.
 
 ## License
 

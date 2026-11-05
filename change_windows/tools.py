@@ -1,7 +1,7 @@
 """Agent tools: propose, list, next, close. Handlers return JSON strings and never raise.
 
-The agent can propose and close windows. It can never approve one: approval needs the owner
-(Telegram button / Mini App with verified initData, or the CLI on a real TTY).
+The agent can propose and close windows. It can never approve one: approval needs the owner,
+through a Telegram button or the Mini App from an allow-listed Telegram user id.
 """
 
 from __future__ import annotations

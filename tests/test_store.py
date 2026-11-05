@@ -56,7 +56,7 @@ def test_close_removes_permission(store):
         store.close(w.id, by="agent:test", reason="again", now=101)
 
 
-def test_effects_claimed_exactly_once_across_store_instances(store, db_path):
+def test_effects_claimed_once_across_store_instances(store, db_path):
     import sqlite3
 
     w, _ = mk(store, 1000, 2000)
@@ -67,6 +67,8 @@ def test_effects_claimed_exactly_once_across_store_instances(store, db_path):
     second = other.claim_due_effects(now=1000)
     assert sorted(k for _, k, _ in first) == ["remind", "start"]
     assert second == []
+    for wid, kind, _ in first:
+        store.finish_effect(wid, kind, "ok", now=1001)
     assert [k for _, k, _ in other.claim_due_effects(now=2000)] == ["end"]
 
 
@@ -75,3 +77,54 @@ def test_audit_preview_is_capped(store):
                        preview="x" * 1000)
     row = store.audit_tail(1)[0]
     assert row["verdict"] == "blocked" and len(row["preview"]) == 400
+
+
+
+def test_concurrent_approvals_of_overlapping_exclusive_windows(db_path):
+    import sqlite3
+    import threading
+
+    def connect():
+        return sqlite3.connect(db_path, timeout=10)
+
+    s0 = Store(connect)
+    a, _ = s0.propose(name="a", scope="k8s-prod", start_ts=0, end_ts=2 * H, reason="r", proposed_by="x", now=0)
+    b, _ = s0.propose(name="b", scope="k8s-prod", start_ts=H, end_ts=3 * H, reason="r", proposed_by="x", now=0)
+    barrier = threading.Barrier(2)
+    results = {}
+
+    def approve(wid):
+        st = Store(connect)
+        barrier.wait()
+        try:
+            results[wid] = st.decide(wid, approve=True, by="owner:1", now=5).state
+        except StoreError as exc:
+            results[wid] = f"refused: {exc}"
+
+    threads = [threading.Thread(target=approve, args=(w.id,)) for w in (a, b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(v == "approved" for v in results.values()) == [False, True]
+
+
+def test_close_after_concurrent_approval_still_removes_permission(store):
+    w, _ = mk(store, 0, H)
+    store.decide(w.id, approve=True, by="owner:1", now=1)  # approved between the agent's read and close
+    closed = store.close(w.id, by="agent:test", reason="done", now=10)
+    assert closed.state == "closed" and not closed.is_open(11)
+
+
+def test_effect_lease_survives_a_crash_and_is_bounded(store):
+    w, _ = mk(store, 1000, 2000)
+    store.ensure_effects(w, reminder_s=600)
+    first = store.claim_due_effects(now=1000, lease_s=300)
+    assert sorted(k for _, k, _ in first) == ["remind", "start"]
+    assert store.claim_due_effects(now=1100, lease_s=300) == []          # lease still held
+    store.finish_effect(w.id, "remind", "sent", now=1100)
+    again = store.claim_due_effects(now=1400, lease_s=300)               # crashed "start" is retried
+    assert [k for _, k, _ in again] == ["start"]
+    store.claim_due_effects(now=1800, lease_s=300)                       # attempt 3
+    assert store.claim_due_effects(now=2600, lease_s=300) == [(w.id, "end", 2000)]
+    assert (w.id, "start", 3) in store.failed_effects(max_attempts=3)

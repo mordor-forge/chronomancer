@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 SCHEMA_VERSION = 1
 
@@ -53,11 +54,13 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 CREATE INDEX IF NOT EXISTS audit_ts ON audit (ts);
 CREATE TABLE IF NOT EXISTS effects (
-    window_id TEXT NOT NULL,
-    kind      TEXT NOT NULL,
-    due_ts    INTEGER NOT NULL,
-    done_ts   INTEGER,
-    result    TEXT,
+    window_id  TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    due_ts     INTEGER NOT NULL,
+    claimed_ts INTEGER,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    done_ts    INTEGER,
+    result     TEXT,
     PRIMARY KEY (window_id, kind)
 );
 """
@@ -123,6 +126,7 @@ class Store:
     # -- plumbing -------------------------------------------------------------------------------
     def _conn(self) -> sqlite3.Connection:
         conn = self._connect()
+        conn.execute("PRAGMA busy_timeout = 5000")
         if not self._ready:
             conn.executescript(_SCHEMA)
             conn.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
@@ -130,12 +134,32 @@ class Store:
             self._ready = True
         return conn
 
+    @contextmanager
+    def _write(self) -> Iterator[sqlite3.Connection]:
+        """One ``BEGIN IMMEDIATE`` transaction: read-check-write without a race between processes."""
+        conn = self._conn()
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _rows(conn: sqlite3.Connection, sql: str, params: Iterable[Any] = ()) -> list[Window]:
+        cur = conn.execute(sql, tuple(params))
+        cols = [c[0] for c in cur.description]
+        return [_row_to_window(r, cols) for r in cur.fetchall()]
+
     def _query(self, sql: str, params: Iterable[Any] = ()) -> list[Window]:
         conn = self._conn()
         try:
-            cur = conn.execute(sql, tuple(params))
-            cols = [c[0] for c in cur.description]
-            return [_row_to_window(r, cols) for r in cur.fetchall()]
+            return self._rows(conn, sql, params)
         finally:
             conn.close()
 
@@ -197,61 +221,52 @@ class Store:
         return window, conflicts
 
     def decide(self, window_id: str, *, approve: bool, by: str, now: int) -> Window:
-        """Owner decision on a pending window. Approving re-checks conflicts against approved windows."""
-        window = self.get(window_id)
-        if window is None:
-            raise StoreError(f"unknown window {window_id}")
-        if window.state != "pending":
-            raise StoreError(f"window {window_id} is {window.state}, not pending")
-        if approve:
-            clash = [w for w in self.conflicts(window.scope, window.start_ts, window.end_ts, window.exclusive,
-                                               exclude_id=window.id) if w.state == "approved"]
-            if clash:
-                raise StoreError(f"window {window_id} overlaps approved {', '.join(w.id for w in clash)}")
-        conn = self._conn()
-        try:
-            with conn:
-                cur = conn.execute(
-                    "UPDATE windows SET state = ?, decided_by = ?, decided_at = ? WHERE id = ? AND state = 'pending'",
-                    ("approved" if approve else "declined", by, now, window_id))
-                if cur.rowcount != 1:
-                    raise StoreError(f"window {window_id} changed while deciding")
-        finally:
-            conn.close()
+        """Owner decision on a pending window. Approval re-checks overlaps in the same transaction."""
+        with self._write() as conn:
+            rows = self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))
+            if not rows:
+                raise StoreError(f"unknown window {window_id}")
+            window = rows[0]
+            if window.state != "pending":
+                raise StoreError(f"window {window_id} is {window.state}, not pending")
+            if approve:
+                clash = [w for w in self._rows(
+                    conn, "SELECT * FROM windows WHERE scope = ? AND state = 'approved' AND closed_at IS NULL "
+                          "AND start_ts < ? AND end_ts > ? AND id != ?",
+                    (window.scope, window.end_ts, window.start_ts, window.id)) if window.exclusive or w.exclusive]
+                if clash:
+                    raise StoreError(f"window {window_id} overlaps approved {', '.join(w.id for w in clash)}")
+            conn.execute("UPDATE windows SET state = ?, decided_by = ?, decided_at = ? WHERE id = ?",
+                         ("approved" if approve else "declined", by, now, window_id))
         return self.get(window_id)  # type: ignore[return-value]
 
     def check_in(self, window_id: str, *, by: str, now: int) -> Window:
-        conn = self._conn()
-        try:
-            with conn:
-                cur = conn.execute(
-                    "UPDATE windows SET checked_in_at = ? WHERE id = ? AND state = 'approved' "
-                    "AND closed_at IS NULL AND checked_in_at IS NULL", (now, window_id))
-                if cur.rowcount != 1:
-                    raise StoreError(f"window {window_id} cannot be checked in")
-        finally:
-            conn.close()
+        with self._write() as conn:
+            cur = conn.execute(
+                "UPDATE windows SET checked_in_at = ? WHERE id = ? AND state = 'approved' "
+                "AND closed_at IS NULL AND checked_in_at IS NULL", (now, window_id))
+            if cur.rowcount != 1:
+                raise StoreError(f"window {window_id} cannot be checked in")
         return self.get(window_id)  # type: ignore[return-value]
 
     def close(self, window_id: str, *, by: str, reason: str, now: int) -> Window:
-        """Close early (approved) or cancel (pending). Closing only removes permission."""
-        window = self.get(window_id)
-        if window is None:
-            raise StoreError(f"unknown window {window_id}")
-        conn = self._conn()
-        try:
-            with conn:
-                if window.state == "pending":
-                    conn.execute("UPDATE windows SET state = 'cancelled', closed_at = ?, close_reason = ? "
-                                 "WHERE id = ? AND state = 'pending'", (now, f"{by}: {reason}", window_id))
-                elif window.state == "approved" and window.closed_at is None:
-                    conn.execute("UPDATE windows SET state = 'closed', closed_at = ?, close_reason = ? "
-                                 "WHERE id = ? AND state = 'approved'", (now, f"{by}: {reason}", window_id))
-                else:
-                    raise StoreError(f"window {window_id} is {window.state}; nothing to close")
-        finally:
-            conn.close()
-        return self.get(window_id)  # type: ignore[return-value]
+        """Close early (approved) or cancel (pending), atomically. Closing only removes permission."""
+        with self._write() as conn:
+            rows = self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))
+            if not rows:
+                raise StoreError(f"unknown window {window_id}")
+            window = rows[0]
+            if window.state == "pending":
+                new_state = "cancelled"
+            elif window.state == "approved" and window.closed_at is None:
+                new_state = "closed"
+            else:
+                raise StoreError(f"window {window_id} is {window.state}; nothing to close")
+            conn.execute("UPDATE windows SET state = ?, closed_at = ?, close_reason = ? WHERE id = ?",
+                         (new_state, now, f"{by}: {reason}", window_id))
+        closed = self.get(window_id)
+        assert closed is not None and not closed.is_open(now)
+        return closed
 
     def record_audit(self, *, now: int, verdict: str, tool: str, rule_ids: list[str], scopes: list[str],
                      preview: str, window_id: Optional[str] = None, session_id: str = "", task_id: str = "") -> None:
@@ -286,28 +301,34 @@ class Store:
         finally:
             conn.close()
 
-    def claim_due_effects(self, now: int) -> list[tuple[str, str, int]]:
-        """Claim every due, undone effect exactly once (safe across processes and restarts)."""
-        conn = self._conn()
+    def claim_due_effects(self, now: int, *, lease_s: int = 300, max_attempts: int = 3) -> list[tuple[str, str, int]]:
+        """Lease due, unfinished effects. A lease that is not finished within ``lease_s`` (crash,
+        timeout) is claimed again, up to ``max_attempts``. This is at-least-once with bounded
+        retries: a remote side effect (a message, a comment) can repeat after a crash between the
+        remote call and ``finish_effect``. Callers re-read current state before acting."""
         claimed: list[tuple[str, str, int]] = []
-        try:
-            due = conn.execute("SELECT window_id, kind, due_ts FROM effects WHERE done_ts IS NULL AND due_ts <= ? "
-                               "ORDER BY due_ts", (now,)).fetchall()
+        with self._write() as conn:
+            due = conn.execute(
+                "SELECT window_id, kind, due_ts FROM effects WHERE done_ts IS NULL AND due_ts <= ? "
+                "AND attempts < ? AND (claimed_ts IS NULL OR claimed_ts <= ?) ORDER BY due_ts",
+                (now, max_attempts, now - lease_s)).fetchall()
             for window_id, kind, due_ts in due:
-                with conn:
-                    cur = conn.execute("UPDATE effects SET done_ts = ? WHERE window_id = ? AND kind = ? "
-                                       "AND done_ts IS NULL", (now, window_id, kind))
-                if cur.rowcount == 1:
-                    claimed.append((window_id, kind, due_ts))
-        finally:
-            conn.close()
+                conn.execute("UPDATE effects SET claimed_ts = ?, attempts = attempts + 1 "
+                             "WHERE window_id = ? AND kind = ?", (now, window_id, kind))
+                claimed.append((window_id, kind, due_ts))
         return claimed
 
-    def finish_effect(self, window_id: str, kind: str, result: str) -> None:
+    def finish_effect(self, window_id: str, kind: str, result: str, *, now: int) -> None:
+        with self._write() as conn:
+            conn.execute("UPDATE effects SET done_ts = ?, result = ? WHERE window_id = ? AND kind = ?",
+                         (now, result[:400], window_id, kind))
+
+    def failed_effects(self, *, max_attempts: int = 3) -> list[tuple[str, str, int]]:
+        """Effects that used every attempt without finishing: report them to the owner."""
         conn = self._conn()
         try:
-            with conn:
-                conn.execute("UPDATE effects SET result = ? WHERE window_id = ? AND kind = ?",
-                             (result[:400], window_id, kind))
+            return [tuple(r) for r in conn.execute(
+                "SELECT window_id, kind, attempts FROM effects WHERE done_ts IS NULL AND attempts >= ?",
+                (max_attempts,)).fetchall()]
         finally:
             conn.close()

@@ -22,6 +22,14 @@ SELF_SCOPE = "_self"
 _SEG = r"[^\n|;&]*?"
 
 
+_QUOTES = re.compile(r"[\\\"'`]")
+
+
+def normalize(text: str) -> str:
+    """Drop shell quotes and backslashes so 'kubectl' "apply" and ['kubectl','apply'] read as words."""
+    return _QUOTES.sub("", text)
+
+
 @dataclass(frozen=True)
 class Rule:
     id: str
@@ -30,6 +38,7 @@ class Rule:
     pattern: re.Pattern[str] | None = None
     field: str = "command"
     description: str = ""
+    unless: re.Pattern[str] | None = None
 
     def applies_to(self, tool_name: str) -> bool:
         return any(fnmatch.fnmatchcase(tool_name, pat) for pat in self.tools)
@@ -39,9 +48,13 @@ class Rule:
             return False
         if self.pattern is None:
             return True
-        text = extract_text(args, self.field)
-        return bool(text) and self.pattern.search(text) is not None
+        text = normalize(extract_text(args, self.field))
+        if not text or self.pattern.search(text) is None:
+            return False
+        return self.unless is None or self.unless.search(text) is None
 
+
+_PROTECTED = r"(?:main|master|prod|production)"
 
 DEFAULT_RULES: list[dict[str, Any]] = [
     {
@@ -51,6 +64,13 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "match": rf"\b(kubectl|oc)\b{_SEG}\b(apply|create|delete|patch|replace|scale|edit|label|annotate|"
                  rf"drain|cordon|uncordon|taint|expose|autoscale|rollout\s+(restart|undo|pause|resume)|set\s+\w+)\b",
         "description": "kubectl / oc commands that change cluster state",
+    },
+    {
+        "id": "k8s-exec",
+        "scope": "k8s-prod",
+        "tools": ["terminal"],
+        "match": rf"\b(kubectl|oc)\b{_SEG}\b(exec|cp|debug|attach|run)\b",
+        "description": "remote execution in a cluster (can write); disable if you only exec for reads",
     },
     {
         "id": "helm-write",
@@ -74,11 +94,21 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "description": "infrastructure-as-code apply / destroy",
     },
     {
-        "id": "git-push-protected",
+        "id": "git-push-force",
         "scope": "gitops-merge",
         "tools": ["terminal"],
-        "match": rf"\bgit\b{_SEG}\bpush\b{_SEG}(\b(main|master|prod|production)\b|--force\b|--force-with-lease\b|\s-f\b|--mirror\b|--delete\b)",
-        "description": "git push to a protected branch, or a forced / deleting push",
+        "match": rf"\bgit\b{_SEG}\bpush\b{_SEG}(--force\b|--force-with-lease\b|\s-f\b|--mirror\b|--delete\b|\s:\S)",
+        "description": "forced, mirroring or deleting git push",
+    },
+    {
+        "id": "git-push",
+        "scope": "gitops-merge",
+        "tools": ["terminal"],
+        "match": rf"\bgit\b{_SEG}\bpush\b",
+        # Allowed without a window: an explicit remote plus one branch that is not protected.
+        "unless": rf"\bgit\b{_SEG}\bpush\s+(?:-[\w-]+(?:=\S+)?\s+)*[\w.@/-]+\s+"
+                  rf"(?![^\s|;&]*\b{_PROTECTED}\b)[^\s|;&-][^\s|;&]*\s*(?:$|[|;&\n])",
+        "description": "git push to a protected branch, or with no explicit branch (the upstream may be protected)",
     },
     {
         "id": "pr-merge",
@@ -105,12 +135,23 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "description": "code that names an IaC CLI (opaque: any use counts)",
     },
     {
+        "id": "code-git",
+        "scope": "gitops-merge",
+        "tools": ["execute_code"],
+        "field": "code",
+        "match": r"\bgit\b[\s\S]{0,200}?\bpush\b|\b(gh|tea|glab)\b[\s\S]{0,200}?\bmerge\b",
+        "description": "code that pushes with git or merges a PR (opaque: any use counts)",
+    },
+    {
         "id": "self-protect",
         "scope": SELF_SCOPE,
         "tools": ["terminal", "execute_code", "write_file", "patch"],
         "field": "*",
-        "match": r"plugin-data[/\\]+change-windows|\bhermes\s+change-windows\s+(approve|decide|emergency)\b",
-        "description": "the plugin's own window store and approval commands",
+        "match": r"plugin-data[/\\]+change-windows|plugins\.entries\.change-windows|"
+                 r"\bhermes\s+(?:-\S+\s+)*change-windows\b|"
+                 r"\bhermes\s+plugins\s+(?:disable|remove|uninstall|update|install)\s+(?:\S+\s+)*change-windows\b|"
+                 r"config\.ya?ml[\s\S]*\bchange-windows\b|\bchange-windows\b[\s\S]*config\.ya?ml",
+        "description": "the plugin's own store, settings and plugin state",
     },
 ]
 
@@ -146,9 +187,9 @@ def compile_rule(raw: dict[str, Any]) -> Rule:
         tools = [tools]
     if not rule_id or not scope or not tools:
         raise RuleError(f"rule needs id, scope and tools: {raw!r}")
-    match = raw.get("match")
     try:
-        pattern = re.compile(match) if match else None
+        pattern = re.compile(raw["match"]) if raw.get("match") else None
+        unless = re.compile(raw["unless"]) if raw.get("unless") else None
     except re.error as exc:
         raise RuleError(f"rule {rule_id}: bad regular expression: {exc}") from exc
     return Rule(
@@ -158,6 +199,7 @@ def compile_rule(raw: dict[str, Any]) -> Rule:
         pattern=pattern,
         field=str(raw.get("field") or "command"),
         description=str(raw.get("description") or ""),
+        unless=unless,
     )
 
 

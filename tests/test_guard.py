@@ -67,3 +67,29 @@ def test_self_protect_blocks_even_inside_any_window(store):
 def test_off_mode_allows():
     hook = guard.make_hook(get_rules=lambda: RS, get_mode=lambda: "off", store=Exploding())
     assert hook(tool_name="terminal", args=KAPPLY) is None
+
+
+
+def test_self_protect_blocks_in_warn_mode(store):
+    hook = guard.make_hook(get_rules=lambda: RS, get_mode=lambda: "warn", store=store, clock=lambda: 100)
+    out = hook(tool_name="terminal", args={"command": "hermes plugins disable change-windows"})
+    assert out["action"] == "block"
+
+
+def test_redaction_cases():
+    synthetic = "s3cr3t-synthetic value"
+    cases = [
+        f'kubectl create secret generic x --from-literal=password="{synthetic}"',
+        "curl -H 'Authorization: Bearer s3cr3t-synthetic-token' https://x",  # gitleaks:allow (synthetic)
+        f'echo {{"password": "{synthetic}"}} | kubectl apply -f -',
+        f"helm upgrade app ./c --set db.password='{synthetic}'",
+        "kubectl apply -f x --token ghp_" + "A" * 36,
+    ]
+    for c in cases:
+        out = guard.redact(c)
+        assert "s3cr3t" not in out and "synthetic value" not in out and "AAAAAAAA" not in out, out
+
+
+def test_preview_never_stores_code_or_non_terminal_values():
+    assert "subprocess" not in guard.preview("execute_code", {"code": "import subprocess; kubectl"})
+    assert "secretvalue" not in guard.preview("mcp__k__apply", {"manifest": "secretvalue"})

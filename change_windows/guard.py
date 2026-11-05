@@ -13,10 +13,25 @@ from .store import Store, Window
 
 MODES = ("enforce", "warn", "off")
 
-# Mask obvious secrets before a command preview reaches the audit log.
-_SECRET_RE = re.compile(
-    r"(?i)(--?(token|password|passwd|secret|api[-_]?key)[= ]\S+|(token|password|secret|key)=\S+|"
-    r"bearer\s+\S+|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-\S+)")
+# Masking for the audit preview. Best effort: treat a stored preview as sensitive anyway.
+_SENSITIVE = r"(?:token|password|passwd|pwd|secret|api[-_]?key|apikey|auth|authorization|credential|private[-_]?key)"
+_MASKS = [
+    # Authorization: Bearer x / Basic x
+    re.compile(r"(?i)\b((?:bearer|basic)\s+)\S+"),
+    # "password": "x y"  /  'token': 'x'  (JSON / Python literals)
+    re.compile(rf"""(?i)(["']?[\w.-]*{_SENSITIVE}[\w.-]*["']?\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)"""),
+    # --password "x y" / --token=x / -p x
+    re.compile(rf"""(?i)(--?[\w-]*{_SENSITIVE}[\w-]*(?:=|\s+))("[^"]*"|'[^']*'|\S+)"""),
+]
+_TOKEN_SHAPES = re.compile(
+    r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]+|sk-[A-Za-z0-9_-]{16,}|"
+    r"AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|\d{6,}:[A-Za-z0-9_-]{30,})")
+
+
+def redact(text: str) -> str:
+    for pat in _MASKS:
+        text = pat.sub(lambda m: m.group(1) + "[masked]", text)
+    return _TOKEN_SHAPES.sub("[masked]", text)
 
 
 @dataclass
@@ -33,9 +48,14 @@ class Decision:
         return None
 
 
-def preview(tool_name: str, args: dict[str, Any], field_name: str = "command") -> str:
-    text = extract_text(args, field_name) or extract_text(args, "*")
-    return _SECRET_RE.sub("[masked]", text)[:400]
+def preview(tool_name: str, args: dict[str, Any]) -> str:
+    """Audit preview: the masked shell line for ``terminal``; names only for every other tool."""
+    if tool_name == "terminal":
+        return redact(extract_text(args, "command"))[:400]
+    if tool_name == "execute_code":
+        code = extract_text(args, "code")
+        return f"execute_code: {len(code)} chars of code (not stored)"
+    return f"{tool_name}: args {sorted(args)[:12]} (values not stored)"
 
 
 def _fmt(ts: int, tz: Any) -> str:
@@ -66,10 +86,9 @@ def decide(
     scopes = sorted({r.scope for r in matched})
     missing: list[str] = []
     window_id: Optional[str] = None
+    if SELF_SCOPE in scopes and mode != "off":  # self-protection blocks in warn mode too
+        return Decision("block", rule_ids, scopes, None, block_message([SELF_SCOPE], rule_ids, store, now, tz))
     for scope in scopes:
-        if scope == SELF_SCOPE:
-            missing.append(scope)
-            continue
         open_now = store.open_windows(scope, now)
         if open_now:
             window_id = open_now[0].id
@@ -84,8 +103,8 @@ def decide(
 
 def block_message(missing: list[str], rule_ids: list[str], store: Store, now: int, tz: Any) -> str:
     if SELF_SCOPE in missing:
-        return ("change-windows: blocked. This call touches the change-windows store or its approval "
-                "commands, which no window can open. Only the owner approves windows (Telegram or a TTY).")
+        return ("change-windows: blocked. This call touches the change-windows store, settings or plugin "
+                "state, which no window can open. Only the owner approves windows, from Telegram.")
     lines = [f"change-windows: blocked. Rule(s) {', '.join(rule_ids)} need an open change window for "
              f"scope(s) {', '.join(missing)}, and none is open now."]
     for scope in missing:

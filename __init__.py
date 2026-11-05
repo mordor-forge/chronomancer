@@ -7,7 +7,7 @@ Skeleton wiring (build day 1 state):
 Planned (see SPEC "Build plan"; not registered yet, so the manifest stays truthful):
 - Telegram: approval buttons, /windows command and the Mini App (register_platform_handler).
 - Scheduler: reminders, card release at start, miss report (spawn_task + on_kanban_dispatch_tick).
-- CLI: ``hermes change-windows`` (list, approve on a real TTY).
+- CLI: ``hermes change-windows list`` (read-only; approvals stay in Telegram).
 """
 
 from __future__ import annotations
