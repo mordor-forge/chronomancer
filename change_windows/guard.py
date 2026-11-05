@@ -59,6 +59,8 @@ def preview(tool_name: str, args: dict[str, Any], *, include_command: bool = Fal
     if tool_name == "terminal":
         command = extract_text(args, "command")
         if include_command:
+            if len(command) > _REDACT_INPUT_CAP:  # never cut inside an unparsed secret: omit instead
+                return f"terminal: {len(command)} chars (too long to preview safely)"
             return redact(command)[:400]
         return f"terminal: {len(command)} chars (command not stored)"
     if tool_name == "execute_code":

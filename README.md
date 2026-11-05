@@ -106,8 +106,10 @@ line.
 - **Reads:** the arguments of every tool call, to match rules. For matched calls the plugin's own
   SQLite database (`<HERMES_HOME>/plugin-data/change-windows/`) stores the tool name, rule ids,
   scope, window, session/task ids and the argument size or names, not the values. With
-  `audit_command_preview: true` it also stores a masked command preview; masking is best effort, so
-  a secret can remain. Treat the database as sensitive.
+  `audit_command_preview: true` it also stores a masked command preview (commands longer than 2000
+  characters are omitted); masking is best effort, so a secret can remain. Turning the setting off
+  does not clean old rows: purge them (planned owner action; `Store.purge_previews()` today) and
+  remember that SQLite and backups can keep old pages. Treat the database as sensitive.
 - **Network:** none in the skeleton. Planned: messages to the owner through the gateway's own
   Telegram bot, and a Mini App page that loads Telegram's `telegram-web-app.js` in the Telegram
   client.

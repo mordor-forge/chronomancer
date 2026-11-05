@@ -130,19 +130,31 @@ class Store:
         if not self._ready:
             conn.executescript(_SCHEMA)
             self._migrate(conn)
-            conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
-            conn.commit()
             self._ready = True
         return conn
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
-        """v1 -> v2: leased effects. Adds columns in place; never drops data."""
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(effects)")}
-        if "claimed_ts" not in cols:
-            conn.execute("ALTER TABLE effects ADD COLUMN claimed_ts INTEGER")
-        if "attempts" not in cols:
-            conn.execute("ALTER TABLE effects ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        """v1 -> v2: leased effects. Serialized with BEGIN IMMEDIATE, so two processes that open a v1
+        file at the same time cannot both add a column. Adds columns in place; never drops data."""
+        level = conn.isolation_level
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cols = {row[1] for row in conn.execute("PRAGMA table_info(effects)")}
+                if "claimed_ts" not in cols:
+                    conn.execute("ALTER TABLE effects ADD COLUMN claimed_ts INTEGER")
+                if "attempts" not in cols:
+                    conn.execute("ALTER TABLE effects ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+                conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema_version', ?)",
+                             (str(SCHEMA_VERSION),))
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        finally:
+            conn.isolation_level = level
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
@@ -290,6 +302,17 @@ class Store:
                      session_id, task_id))
         finally:
             conn.close()
+
+    def purge_previews(self, *, before_ts: Optional[int] = None) -> int:
+        """Owner action: blank stored command previews (all, or older than ``before_ts``). Audit rows
+        stay; only the preview text goes. SQLite may keep old pages until VACUUM."""
+        with self._write() as conn:
+            sql = "UPDATE audit SET preview = '[purged]' WHERE preview != '[purged]'"
+            params: tuple[Any, ...] = ()
+            if before_ts is not None:
+                sql += " AND ts < ?"
+                params = (before_ts,)
+            return conn.execute(sql, params).rowcount
 
     def audit_tail(self, limit: int = 50) -> list[dict[str, Any]]:
         conn = self._conn()

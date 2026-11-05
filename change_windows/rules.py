@@ -22,7 +22,7 @@ SELF_SCOPE = "_self"
 _SEG = r"[^\n|;&]*?"
 
 
-_SEGMENTS = re.compile(r"[\n|;&]+")
+_SEPARATORS = "\n|;&"
 _QUOTES = re.compile(r"[\\\"'`]")
 
 
@@ -54,8 +54,15 @@ class Rule:
             return False
         if self.unless is None:
             return True
-        # An exception applies per command segment: one safe segment never cancels another.
-        return any(self.pattern.search(seg) and not self.unless.search(seg) for seg in _SEGMENTS.split(text))
+        # An exception is checked only against the command segment(s) a match spans, so one safe
+        # segment never cancels another, and a match that spans several lines is kept whole.
+        for m in self.pattern.finditer(text):
+            lo = max(text.rfind(c, 0, m.start()) for c in _SEPARATORS) + 1
+            ends = [i for i in (text.find(c, m.end()) for c in _SEPARATORS) if i != -1]
+            hi = min(ends) if ends else len(text)
+            if not self.unless.search(text[lo:hi]):
+                return True
+        return False
 
 
 DEFAULT_RULES: list[dict[str, Any]] = [
@@ -132,7 +139,8 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "scope": "gitops-merge",
         "tools": ["execute_code"],
         "field": "code",
-        "match": r"\bgit\b[\s\S]*\bpush\b|\b(gh|tea|glab)\b[\s\S]*\bmerge\b",
+        # Anchored look-aheads: each token is searched once, so the cost stays linear in the code size.
+        "match": r"\A(?=[\s\S]*\bgit\b)(?=[\s\S]*\bpush\b)|\A(?=[\s\S]*\b(?:gh|tea|glab)\b)(?=[\s\S]*\bmerge\b)",
         "description": "code that names git and push, or a forge CLI and merge, anywhere (opaque)",
     },
     {
@@ -141,7 +149,7 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "tools": ["terminal", "execute_code", "write_file", "patch"],
         "field": "*",
         "match": r"plugin-data[/\\]+change-windows|plugins\.entries\.change-windows|"
-                 r"\bhermes\s+(?:-\S+\s+)*change-windows\s+(?!(?:list|show|status|help)\b)\w|"
+                 r"\bhermes\s+(?:-\S+\s+)*change-windows\s+(?!(?:list|show|status|help)(?![\w-]))\S|"
                  r"\bhermes\s+plugins\s+(?:disable|remove|uninstall|update|install)\s+(?:\S+\s+)*change-windows\b|"
                  r"\.hermes[/\\][^\s,]*config\.ya?ml[\s\S]*\bchange-windows\b|"
                  r"\bchange-windows\b[\s\S]*\.hermes[/\\][^\s,]*config\.ya?ml",

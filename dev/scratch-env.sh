@@ -22,6 +22,7 @@ set -eu
 [ "$#" -ge 1 ] || { echo "usage: $0 <command> [args...]" >&2; exit 2; }
 
 REAL_GIT=$(command -v git || true)
+case "$REAL_GIT" in *"'"*) echo "scratch-env: git path contains a single quote; refusing" >&2; exit 2 ;; esac
 SCRATCH=${CW_SCRATCH:-$(mktemp -d "${TMPDIR:-/tmp}/cw-scratch.XXXXXX")}
 mkdir -p "$SCRATCH/home" "$SCRATCH/kanban" "$SCRATCH/tmp" "$SCRATCH/stubbin"
 for b in kubectl oc helm argocd tofu terraform terragrunt pulumi gh tea glab; do
@@ -35,7 +36,7 @@ for a in "\$@"; do
     push|send-email|dcommit|submit) echo "STUB git: '\$a' is refused in the scratch env" >&2; exit 99 ;;
   esac
 done
-exec ${REAL_GIT:-/bin/false} "\$@"
+exec '${REAL_GIT:-/bin/false}' "\$@"
 EOF
 chmod +x "$SCRATCH/stubbin/git"
 echo "scratch: $SCRATCH" >&2

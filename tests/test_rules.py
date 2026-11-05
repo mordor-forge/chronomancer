@@ -124,6 +124,8 @@ def test_code_git(code):
 @pytest.mark.parametrize("tool,args", [
     ("terminal", {"command": "hermes 'change-windows' approve W1"}),
     ("terminal", {"command": "hermes change-windows reset"}),
+    ("terminal", {"command": "hermes change-windows --force reset"}),
+    ("terminal", {"command": "hermes change-windows list-reset"}),
     ("terminal", {"command": "hermes plugins disable change-windows"}),
     ("terminal", {"command": "hermes config set plugins.entries.change-windows.settings.mode off"}),
     ("write_file", {"path": "/home/u/.hermes/config.yaml", "content": "plugins:\n  entries:\n    change-windows: {}"}),
@@ -148,3 +150,19 @@ def test_mcp_rule_by_tool_name_patterns():
                                    "mcp__kubernetes__*apply*", "mcp__kubernetes__*scale*"]}])
     assert [r.id for r in rs.match("mcp__kubernetes__resources_delete", {"name": "x"})] == ["mcp-k8s-write"]
     assert not rs.match("mcp__kubernetes__pods_list", {})
+
+
+
+def test_unless_keeps_a_multiline_match():
+    rs = build_ruleset([{"id": "custom-git", "scope": "s", "tools": ["execute_code"], "field": "code",
+                         "match": r"\bgit\b[\s\S]*\bpush\b", "unless": r"--dry-run"}], include_defaults=False)
+    code = 'subprocess.run(["git",\n    "push", "origin", "main"])'
+    assert [r.id for r in rs.match("execute_code", {"code": code})] == ["custom-git"]
+    assert not rs.match("execute_code", {"code": code.replace('"main"', '"main", "--dry-run"')})
+
+
+def test_code_git_is_linear_on_many_git_tokens():
+    import time as _t
+    start = _t.monotonic()
+    assert ids("execute_code", code="# " + "git " * 50_000) == []
+    assert _t.monotonic() - start < 0.5

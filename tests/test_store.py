@@ -145,3 +145,45 @@ def test_v1_database_is_migrated_in_place(db_path):
     conn.close()
     s = Store(lambda: sqlite3.connect(db_path, timeout=5))
     assert s.claim_due_effects(now=100) == [("WOLD", "start", 10)]
+
+
+
+def test_concurrent_v1_migration_is_serialized(db_path):
+    import sqlite3
+    import threading
+
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE effects (window_id TEXT NOT NULL, kind TEXT NOT NULL, due_ts INTEGER NOT NULL,
+                              done_ts INTEGER, result TEXT, PRIMARY KEY (window_id, kind));
+    """)
+    conn.commit()
+    conn.close()
+    errors = []
+    barrier = threading.Barrier(4)
+
+    def open_store():
+        barrier.wait()
+        try:
+            Store(lambda: sqlite3.connect(db_path, timeout=10)).audit_tail(1)
+        except Exception as exc:  # report, do not hide
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=open_store) for _ in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert errors == []
+    cols = {r[1] for r in sqlite3.connect(db_path).execute("PRAGMA table_info(effects)")}
+    assert {"claimed_ts", "attempts"} <= cols
+
+
+def test_purge_previews(store):
+    store.record_audit(now=1, verdict="blocked", tool="terminal", rule_ids=["k8s-write"], scopes=["k8s-prod"],
+                       preview="old preview text")
+    store.record_audit(now=5, verdict="blocked", tool="terminal", rule_ids=["k8s-write"], scopes=["k8s-prod"],
+                       preview="newer preview")
+    assert store.purge_previews(before_ts=3) == 1
+    assert [r["preview"] for r in store.audit_tail(2)] == ["newer preview", "[purged]"]
+    assert store.purge_previews() == 1

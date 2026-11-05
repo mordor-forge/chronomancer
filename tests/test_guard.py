@@ -119,3 +119,10 @@ def test_opt_in_command_preview_is_masked(store):
 def test_preview_never_stores_code_or_non_terminal_values():
     assert "subprocess" not in guard.preview("execute_code", {"code": "import subprocess; kubectl"})
     assert "secretvalue" not in guard.preview("mcp__k__apply", {"manifest": "secretvalue"})
+
+
+
+def test_long_opt_in_preview_is_omitted_not_cut():
+    cmd = 'kubectl apply --password="prefix s3cr3t-synthetic ' + "x" * 3000 + '" -f x'
+    out = guard.preview("terminal", {"command": cmd}, include_command=True)
+    assert "s3cr3t" not in out and "too long" in out
