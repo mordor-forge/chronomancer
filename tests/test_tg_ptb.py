@@ -380,6 +380,105 @@ def test_a_proposal_from_another_thread_wakes_the_scheduler(store):
     assert len(asyncio.run(main()).named("sendMessage")) == 1
 
 
+# -- Fri 6: start and end effects through the scheduler ---------------------------------------------
+
+def approved_window(store, cards=(), start=NOW + 600, end=NOW + 4200):
+    w, _ = store.propose(name="web v2", scope="k8s-prod", start_ts=start, end_ts=end, reason="roll out web v2",
+                         proposed_by="agent:test", now=NOW, cards=[{"task_id": t, "board": ""} for t in cards])
+    store.decide(w.id, approve=True, by=f"telegram:{OWNER}", now=NOW)
+    return w
+
+
+def test_scheduler_opens_releases_and_ends_a_window(store):
+    from test_effects import FakeKanban
+    from change_windows import effects as fx
+
+    clock = {"now": NOW}
+    kanban = FakeKanban({"t_aa0001": "blocked"})
+
+    async def main():
+        app, api = build_app()
+        acts = make_actions(store, clock=lambda: clock["now"])
+        runtime = tg.Runtime(acts, effects=fx.Effects(store, acts, dispatch=kanban))
+        runtime.bind(app)
+        w = approved_window(store, cards=["t_aa0001"])
+        await app.initialize()
+        await app.start()
+        counts = [await runtime.tick()]            # before the start: the proposal was approved directly
+        clock["now"] = NOW + 600
+        counts.append(await runtime.tick())        # start: release + open notice
+        counts.append(await runtime.tick())        # nothing new
+        clock["now"] = NOW + 4200
+        counts.append(await runtime.tick())        # end notice
+        await app.stop()
+        await app.shutdown()
+        return w, api, counts
+
+    w, api, counts = asyncio.run(main())
+    assert counts == [0, 1, 0, 1]
+    opened, ended = api.named("sendMessage")
+    assert opened["text"].startswith("Window OPEN: web v2") and "Cards eligible: t_aa0001 ready" in opened["text"]
+    assert keyboard(opened) == [[f"cw:close:{w.id}"]] and "parse_mode" not in opened
+    assert ended["text"].startswith("Window ended: web v2") and keyboard(ended) == []
+    assert kanban.board["t_aa0001"]["status"] == "ready" and len(kanban.board["t_aa0001"]["comments"]) == 1
+
+
+def test_an_effect_that_keeps_failing_is_reported_once(store, caplog):
+    from change_windows import effects as fx
+
+    clock = {"now": NOW + 600}
+
+    async def main():
+        app, api = build_app()
+        acts = make_actions(store, clock=lambda: clock["now"])
+        runtime = tg.Runtime(acts, effects=fx.Effects(store, acts, dispatch=None))  # no kanban tools
+        runtime.bind(app)
+        w = approved_window(store, cards=["t_aa0001"])
+        await app.initialize()
+        await app.start()
+        counts = []
+        with caplog.at_level(logging.WARNING):
+            for _ in range(fx.MAX_ATTEMPTS + 2):
+                counts.append(await runtime.tick())
+                clock["now"] += fx.LEASE_S
+        await app.stop()
+        await app.shutdown()
+        return w, api, counts
+
+    w, api, counts = asyncio.run(main())
+    assert counts == [0, 0, 0, 1, 0]
+    [report] = api.named("sendMessage")
+    assert report["text"].startswith(f"change-windows could not open (release the cards of) {w.id} after 3 attempts")
+    assert "kanban tools are not available" in report["text"]
+    assert caplog.text.count("start effect for") == 3
+    assert store.effect_result(w.id, "start").startswith("failed after 3 attempts; reported")
+
+
+def test_a_late_approval_opens_the_window_at_once(store):
+    async def main():
+        app, api = build_app()
+        spawn = Spawner()
+        factory = tg.make_factory(key=lambda: "/scratch/late", actions=make_actions(store), spawn=spawn)
+        factory(app, None)
+        tg._RUNTIMES["/scratch/late"].interval_s = 3600  # only the button's wake can open it in time
+        w = propose(store, start=NOW - 60, end=NOW + 3600)  # its start has passed; still pending
+        await app.initialize()
+        await app.start()
+        await asyncio.sleep(0.05)
+        await app.process_update(button_update(app, OWNER, f"cw:approve:{w.id}"))
+        for _ in range(100):
+            if any(p["text"].startswith("Window OPEN") for p in api.named("sendMessage")):
+                break
+            await asyncio.sleep(0.02)
+        await spawn.cancel_all()
+        await app.stop()
+        await app.shutdown()
+        return api
+
+    texts = [p["text"].splitlines()[0] for p in asyncio.run(main()).named("sendMessage")]
+    assert texts == ["Window OPEN: web v2"]  # approved before its announce ran: the announce is skipped
+
+
 # -- register(): isolation fallback, and the real factory from the plugin entry point -------------------
 
 def load_plugin(tmp_path, monkeypatch):
@@ -404,7 +503,7 @@ class FakeCtx:
 
     def __init__(self, *, host_isolation=False):
         self.host_isolation = host_isolation
-        self.tools, self.hooks, self.factories, self.spawned = [], [], [], []
+        self.tools, self.hooks, self.factories, self.spawned, self.dispatched = [], [], [], [], []
         self.config = {"approver_telegram_ids": [OWNER]}
 
     def get_config(self, key, default=None):
@@ -425,6 +524,10 @@ class FakeCtx:
         task = asyncio.get_running_loop().create_task(coro, name=name)
         self.spawned.append(task)
         return task
+
+    def dispatch_tool(self, tool_name, args, **_):
+        self.dispatched.append((tool_name, args))
+        return json.dumps({"error": f"task {args.get('task_id')} not found"})
 
 
 def test_host_isolation_keeps_guard_and_tools(tmp_path, monkeypatch, caplog):
@@ -458,3 +561,27 @@ def test_registered_factory_starts_one_scheduler(tmp_path, monkeypatch):
         return spawned, names, len(ours(app1)), len(ours(app2))
 
     assert asyncio.run(main()) == (1, ["change-windows:scheduler"], 2, 2)
+
+
+def test_registered_factory_releases_cards_through_dispatch_tool(tmp_path, monkeypatch):
+    plugin = load_plugin(tmp_path, monkeypatch)
+    ctx = FakeCtx()
+    plugin.register(ctx)
+
+    async def main():
+        app, _ = build_app()
+        ctx.factories[0][1](app, None)
+        [runtime] = sys.modules["cw_plugin_under_test.change_windows.tg"]._RUNTIMES.values()
+        for task in ctx.spawned:
+            task.cancel()
+        await asyncio.gather(*ctx.spawned, return_exceptions=True)
+        return runtime
+
+    runtime = asyncio.run(main())
+    store = runtime.actions.store
+    w, _ = store.propose(name="n", scope="k8s-prod", start_ts=NOW, end_ts=NOW + 60, reason="r",
+                         proposed_by="agent:test", now=NOW, cards=[{"task_id": "t_aa0001", "board": "ops"}])
+    store.decide(w.id, approve=True, by=f"telegram:{OWNER}", now=NOW)
+    outcome = runtime.effects.run(w.id, "start", NOW)
+    assert ctx.dispatched == [("kanban_show", {"task_id": "t_aa0001", "board": "ops"})]
+    assert "Not released: t_aa0001 (not found)" in outcome.text

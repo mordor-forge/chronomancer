@@ -3,8 +3,8 @@
 Approved time windows for production changes made by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
 > Status: **in development** (0.1.0-dev0). The guard, the four agent tools and the Telegram
-> buttons (approve, decline, close, `/windows`) work and are tested. Card release at window start
-> and the Mini App are planned (see "Roadmap").
+> buttons (approve, decline, close, `/windows`), card release at window start and the start and
+> end notices work and are tested. The Mini App is planned (see "Roadmap").
 
 ## Why
 
@@ -49,14 +49,31 @@ gateway's bot. It needs no bot token of its own.
 - **Proposal message.** Each new proposal goes to the owner chat: name, scope, time, reason,
   linked cards, overlaps, and the buttons **Approve** and **Decline**. Proposals from any process
   of the profile (gateway chat, CLI chat, Kanban workers) are queued in the plugin database; the
-  gateway sends them within about 10 seconds.
+  gateway sends them within about 10 seconds (at once when the proposal comes from the gateway).
 - **Close now.** An approved window's message has a **Close now** button. Matched calls are
   blocked again from the next call on.
+- **Window opens.** At the start of an approved window the plugin releases its linked Kanban
+  cards and sends "Window OPEN" with the cards that are now eligible, the ones it could not release
+  (unknown, triage, done) and a **Close now** button. Approving after the start opens it at once.
+- **Window ends.** At the end: "Window ended", unless it was closed early. A start that the gateway
+  missed completely (it was down for the whole window) is reported as missed; its cards stay as they
+  were. An effect that fails 3 times (2 minutes apart) is reported to the owner chat.
 - **`/windows`.** Today's and tomorrow's windows, with overlaps.
 - **Who can act.** Only the Telegram user ids in `approver_telegram_ids`. Empty means nobody. Other
   users get "Only an approver can do this" on a button and no answer to `/windows`. A stale button
   (an old message) is checked against the current state and redrawn.
 - Messages are plain text, so agent-written names and reasons cannot add formatting or links.
+
+## Kanban cards
+
+`window_propose` takes Kanban task ids (`cards`, optionally `board`). When the window opens, the
+gateway's scheduler goes through the kanban tools (`ctx.dispatch_tool`): `kanban_show` re-reads the
+card, `kanban_unblock` releases a `blocked` or `scheduled` card (it lands in `ready`, or `todo`
+while parent cards are open), and `kanban_comment` adds one comment with the window id, scope and
+end time. Cards that are already `ready`, `todo`, `review` or `running` get the comment only. The
+comment never contains the window's name or reason: comments reach future workers' prompts.
+The plugin promises that the card becomes eligible; the worker starts when the dispatcher has
+capacity. A `triage` card cannot be released through any public surface, so it is reported.
 
 ## Settings
 
@@ -116,9 +133,11 @@ line.
   are not parsed); disable `git-push` and add a narrower rule if your agent pushes feature branches.
   `kubectl exec` counts as a write. A resource named `delete` in `kubectl get configmap delete` is
   blocked. Turn rules off with `disabled_rules`.
-- **Timed effects are at least once.** A proposal message (and, when built, a card comment) can
-  repeat after a crash; a failed send is retried after 2 minutes, at most 3 times. A release
-  (planned) is re-checked against the window and the card state before it runs.
+- **Timed effects are at least once.** A message can repeat after a crash between the send and
+  the record; a failed effect is retried after 2 minutes, at most 3 times. A release re-reads the
+  window and each card first, so a retry does not unblock or comment twice. The scheduler runs in
+  the gateway: with the gateway down, cards are released when it comes back (if the window has not
+  ended), and the guard keeps working without it.
 - **Admission only.** Closing a window blocks later calls; it does not stop a command that already
   started.
 
@@ -135,8 +154,11 @@ line.
   `/windows`, through the gateway's own Telegram bot. Planned: a Mini App page that loads
   Telegram's `telegram-web-app.js` in the Telegram client.
 - **Background work:** inside the gateway, when Telegram connects: one supervised task per profile
-  (`ctx.spawn_task`) that sends proposal messages. Planned: one HTTP listener on `127.0.0.1` for the
-  Mini App, which you publish yourself.
+  (`ctx.spawn_task`) that sends proposal messages and the start and end notices, and releases
+  linked cards. Planned: one HTTP listener on `127.0.0.1` for the Mini App, which you publish
+  yourself.
+- **Kanban:** unblocks and comments on the cards a window links, through the kanban tools
+  (`kanban_show`, `kanban_unblock`, `kanban_comment`), when the window opens.
 - **Credentials:** the plugin reads none and asks for none. The planned Mini App verifies Telegram
   `initData` with Telegram's published Ed25519 key and the public bot id, so the plugin never holds
   the bot token. (An opted-in command preview can contain a secret that masking missed.)
@@ -146,10 +168,10 @@ line.
 
 ## Roadmap
 
-- Telegram: notices at window start and end. Later: reminders, check-in.
 - Mini App: a list of windows with overlap badges, approve / decline / close, recent audit rows.
   Later: timeline lanes, emergency window.
-- Scheduler: release linked Kanban cards at start and comment on them. Later: miss report.
+- Later: reminders before a window, check-in for `presence_required` windows (today such a window
+  does not open, and its cards are not released), `window_propose` refusing triage cards up front.
 - CLI: `hermes change-windows list` (read-only; approvals stay in Telegram).
 
 ## Development

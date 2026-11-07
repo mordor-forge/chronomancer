@@ -5,10 +5,10 @@ Wiring:
 - Agent tools: window_propose, window_list, window_next, window_close.
 - Telegram (``register_platform_handler``, in-process only): proposal messages with Approve /
   Decline, Close now, ``/windows``; one scheduler task per profile (``spawn_task``) that sends the
-  proposal messages.
+  proposal messages, releases linked Kanban cards at start (``dispatch_tool``: kanban_show,
+  kanban_unblock, kanban_comment) and sends the open and end notices.
 
 Planned (not registered yet, so the manifest stays truthful):
-- Scheduler: card release at start and notices at start and end.
 - Mini App (loopback HTTP server started from the Telegram factory).
 """
 
@@ -105,7 +105,8 @@ def register(ctx: Any) -> None:
     factory = tg.make_factory(
         key=lambda: str(plugin_data_dir(PLUGIN_NAME)),
         actions=tg.Actions(store, setting=setting, tz=tz),
-        spawn=lambda coro, name: ctx.spawn_task(coro, name=name))
+        spawn=lambda coro, name: ctx.spawn_task(coro, name=name),
+        dispatch=lambda tool, args: ctx.dispatch_tool(tool, args))
     try:
         ctx.register_platform_handler("telegram", factory)
     except Exception as exc:

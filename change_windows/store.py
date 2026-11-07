@@ -265,6 +265,11 @@ class Store:
                     raise StoreError(f"window {window_id} overlaps approved {', '.join(w.id for w in clash)}")
             conn.execute("UPDATE windows SET state = ?, decided_by = ?, decided_at = ? WHERE id = ?",
                          ("approved" if approve else "declined", by, now, window_id))
+            if approve:
+                # The gateway's scheduler opens the window (card release, notice) and reports its end.
+                # Queued in the same transaction, so an approval never lacks its timed effects.
+                conn.executemany("INSERT OR IGNORE INTO effects (window_id, kind, due_ts) VALUES (?,?,?)",
+                                 [(window_id, "start", window.start_ts), (window_id, "end", window.end_ts)])
         return self.get(window_id)  # type: ignore[return-value]
 
     def check_in(self, window_id: str, *, by: str, now: int) -> Window:
@@ -328,7 +333,7 @@ class Store:
         finally:
             conn.close()
 
-    # -- timed effects (reminders, release at start, miss report at end) ------------------------
+    # -- timed effects (announce on proposal; start and end on approval; reminders are a stretch) ---
     def ensure_effects(self, window: Window, *, reminder_s: int) -> None:
         plan = [("remind", window.start_ts - reminder_s), ("start", window.start_ts), ("end", window.end_ts)]
         conn = self._conn()
@@ -362,10 +367,43 @@ class Store:
                 claimed.append((window_id, kind, due_ts))
         return claimed
 
+    def next_effect_ts(self, *, lease_s: int = 300, max_attempts: int = 3,
+                       kinds: Optional[Iterable[str]] = None) -> Optional[int]:
+        """When ``claim_due_effects`` will next return something: the earliest due time, or the
+        end of a held lease. None when nothing is left to run."""
+        sql = ("SELECT MIN(MAX(due_ts, COALESCE(claimed_ts + ?, 0))) FROM effects "
+               "WHERE done_ts IS NULL AND attempts < ?")
+        params: list[Any] = [lease_s, max_attempts]
+        if kinds is not None:
+            kinds = tuple(kinds)
+            sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+            params.extend(kinds)
+        conn = self._conn()
+        try:
+            row = conn.execute(sql, params).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
     def finish_effect(self, window_id: str, kind: str, result: str, *, now: int) -> None:
         with self._write() as conn:
             conn.execute("UPDATE effects SET done_ts = ?, result = ? WHERE window_id = ? AND kind = ?",
                          (now, result[:400], window_id, kind))
+
+    def note_effect(self, window_id: str, kind: str, result: str) -> None:
+        """Record why an attempt failed; the effect stays unfinished, so the lease retries it."""
+        with self._write() as conn:
+            conn.execute("UPDATE effects SET result = ? WHERE window_id = ? AND kind = ? AND done_ts IS NULL",
+                         (result[:400], window_id, kind))
+
+    def effect_result(self, window_id: str, kind: str) -> Optional[str]:
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT result FROM effects WHERE window_id = ? AND kind = ?",
+                               (window_id, kind)).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
 
     def failed_effects(self, now: int, *, lease_s: int = 300, max_attempts: int = 3) -> list[tuple[str, str, int]]:
         """Effects that used every attempt and whose last lease expired unfinished: report them."""

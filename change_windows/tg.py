@@ -9,9 +9,11 @@ Two parts:
   ``Application``. Each call registers the handlers on that ``Application`` and rebinds the bot;
   only the first call starts the scheduler task.
 
-The scheduler sends the proposal messages. Any process can propose (gateway chat, CLI chat, a
-Kanban worker), so ``Store.propose`` queues an ``announce`` effect and the gateway's scheduler
-sends it. Delivery is at least once: a crash between the send and ``finish_effect`` repeats it.
+The scheduler carries out the timed effects (``effects.py``): proposal messages, card release and
+the "open" notice at start, the "ended" notice at end. Any process can propose (gateway chat, CLI
+chat, a Kanban worker), so the store queues the effects and the gateway's scheduler runs them. It
+runs a pass at start-up (restart recovery), every ``SCHEDULER_INTERVAL_S`` and when woken. Delivery
+is at least once: a crash between a message and ``finish_effect`` repeats the message.
 
 Messages are plain text (no parse mode): names and reasons are agent-written and must not become
 markup. Only Telegram user ids in ``approver_telegram_ids`` can approve, decline or close, and
@@ -31,14 +33,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
+from . import effects as fx
 from .store import Store, StoreError, Window
 
 logger = logging.getLogger(__name__)
 
 CALLBACK_PATTERN = r"^cw:"  # scoped, so the core button flows keep working
 _CALLBACK_RE = re.compile(r"cw:(approve|decline|close):(W[0-9A-F]{6})")  # used with fullmatch
-ANNOUNCE = "announce"
-ANNOUNCE_LEASE_S = 120
+ANNOUNCE = fx.ANNOUNCE
+ANNOUNCE_LEASE_S = fx.LEASE_S
 SCHEDULER_INTERVAL_S = 10.0
 _MAX_TEXT = 3500  # Telegram's limit is 4096; keep room for the header
 
@@ -98,16 +101,16 @@ class Actions:
         return approvers[0] if approvers else None
 
     # -- what a message says ----------------------------------------------------------------------
-    def _fmt(self, ts: int, *, time_only: bool = False) -> str:
+    def fmt(self, ts: int, *, time_only: bool = False) -> str:
         dt = datetime.fromtimestamp(ts, self.tz() or timezone.utc)
         return dt.strftime("%H:%M" if time_only else "%a %d %b %H:%M")
 
-    def _span(self, w: Window) -> str:
+    def span(self, w: Window) -> str:
         tz = self.tz() or timezone.utc
         same_day = (datetime.fromtimestamp(w.start_ts, tz).date() == datetime.fromtimestamp(w.end_ts, tz).date())
-        end = self._fmt(w.end_ts, time_only=same_day)
+        end = self.fmt(w.end_ts, time_only=same_day)
         zone = datetime.fromtimestamp(w.start_ts, tz).strftime("%Z")
-        return f"{self._fmt(w.start_ts)}-{end} {zone}".rstrip()
+        return f"{self.fmt(w.start_ts)}-{end} {zone}".rstrip()
 
     def _overlaps(self, w: Window) -> list[Window]:
         return self.store.conflicts(w.scope, w.start_ts, w.end_ts, w.exclusive, exclude_id=w.id)
@@ -119,7 +122,7 @@ class Actions:
         else:
             head = {"pending": "Window proposal", "declined": "Window declined", "cancelled": "Proposal withdrawn",
                     "closed": "Window closed"}.get(w.state, f"Window {w.state}")
-        lines = [f"{head}: {w.name}", f"{w.id} · scope {w.scope}", self._span(w),
+        lines = [f"{head}: {w.name}", f"{w.id} · scope {w.scope}", self.span(w),
                  "exclusive" if w.exclusive else "shared (other windows may overlap)"]
         if w.cards:
             lines.append("Cards: " + ", ".join(c.get("task_id", "?") for c in w.cards))
@@ -155,7 +158,7 @@ class Actions:
         lines = [f"Change windows, today and tomorrow ({today.strftime('%Z') or 'UTC'}):"]
         for w in rows:
             state = "open" if w.is_open(now) else w.state
-            lines.append(f"{w.id} {state} · {self._span(w)} · {w.scope} · {w.name}")
+            lines.append(f"{w.id} {state} · {self.span(w)} · {w.scope} · {w.name}")
             if w.state in ("pending", "approved") and w.closed_at is None:
                 overlaps = self._overlaps(w)
                 if overlaps:
@@ -210,9 +213,10 @@ def _markup(rows: list[list[tuple[str, str]]]) -> Any:
 class Runtime:
     """One per profile in this process: the current Application, the handlers, the scheduler task."""
 
-    def __init__(self, actions: Actions, *, interval_s: float = SCHEDULER_INTERVAL_S,
-                 clock: Optional[Callable[[], float]] = None):
+    def __init__(self, actions: Actions, *, effects: Optional[fx.Effects] = None,
+                 interval_s: float = SCHEDULER_INTERVAL_S, clock: Optional[Callable[[], float]] = None):
         self.actions = actions
+        self.effects = effects or fx.Effects(actions.store, actions)
         self.interval_s = interval_s
         self.clock = clock or actions.clock
         self.app: Any = None
@@ -221,6 +225,7 @@ class Runtime:
         self._wake: Optional[asyncio.Event] = None
         self._wired: "weakref.WeakSet[Any]" = weakref.WeakSet()
         self._warned_no_chat = False
+        self._active = False  # the last pass could run effects (application running, owner chat set)
         self.binds = 0
 
     # -- factory side ----------------------------------------------------------------------------
@@ -261,22 +266,32 @@ class Runtime:
 
     # -- scheduler -------------------------------------------------------------------------------
     async def run(self) -> None:
+        """A pass at start-up (restart recovery), then one when the next effect is due (at most
+        ``interval_s`` apart, at least 1 s), or when woken."""
         assert self._wake is not None
         while True:
+            delay = self.interval_s
             try:
                 await self.tick()
+                if self._active:
+                    due = await asyncio.to_thread(self.actions.store.next_effect_ts, lease_s=fx.LEASE_S,
+                                                  max_attempts=fx.MAX_ATTEMPTS, kinds=fx.KINDS)
+                    if due is not None:
+                        delay = min(delay, max(1.0, due - self.clock()))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning("change-windows: scheduler pass failed: %s", type(exc).__name__)
             try:
-                await asyncio.wait_for(self._wake.wait(), timeout=self.interval_s)
+                await asyncio.wait_for(self._wake.wait(), timeout=delay)
             except asyncio.TimeoutError:
                 pass
             self._wake.clear()
 
     async def tick(self) -> int:
-        """One pass: send due proposal messages. Returns how many were sent."""
+        """One pass: run the due effects, then report effects that used every attempt.
+        Returns how many messages were sent."""
+        self._active = False
         if not self.ready():
             return 0
         chat = await asyncio.to_thread(self.actions.owner_chat)
@@ -286,25 +301,49 @@ class Runtime:
                                "proposals are not sent to Telegram")
                 self._warned_no_chat = True
             return 0
+        self._active = True
         store = self.actions.store
         now = int(self.clock())
-        claimed = await asyncio.to_thread(store.claim_due_effects, now, lease_s=ANNOUNCE_LEASE_S, kinds=(ANNOUNCE,))
+        claimed = await asyncio.to_thread(store.claim_due_effects, now, lease_s=fx.LEASE_S,
+                                          max_attempts=fx.MAX_ATTEMPTS, kinds=fx.KINDS)
         sent = 0
         for window_id, kind, _due in claimed:
             try:
-                window = await asyncio.to_thread(store.get, window_id)
-                if window is None or window.state != "pending":
-                    await asyncio.to_thread(store.finish_effect, window_id, kind,
-                                            f"skipped: {window.state if window else 'gone'}", now=now)
-                    continue
-                text, buttons = await asyncio.to_thread(self.actions.window_message, window, now)
-                await self.app.bot.send_message(chat_id=chat, text=text, reply_markup=_markup(buttons))
-                await asyncio.to_thread(store.finish_effect, window_id, kind, "sent", now=int(self.clock()))
+                outcome = await asyncio.to_thread(self.effects.run, window_id, kind, now)
+                if outcome.text is not None:
+                    await self.app.bot.send_message(chat_id=chat, text=outcome.text,
+                                                    reply_markup=_markup(outcome.buttons))
+                    sent += 1
+                await asyncio.to_thread(store.finish_effect, window_id, kind, outcome.result, now=int(self.clock()))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # the lease expires and a later pass retries (at most MAX_ATTEMPTS)
+                detail = str(exc) if isinstance(exc, fx.Retry) else f"{type(exc).__name__}: {exc}"
+                logger.warning("change-windows: %s effect for %s failed; it is retried after the lease: %s",
+                               kind, window_id, detail[:200])
+                try:
+                    await asyncio.to_thread(store.note_effect, window_id, kind, f"error: {detail}")
+                except Exception:
+                    pass
+        return sent + await self._report_failures(chat, now)
+
+    async def _report_failures(self, chat: int, now: int) -> int:
+        store = self.actions.store
+        failed = await asyncio.to_thread(store.failed_effects, now, lease_s=fx.LEASE_S, max_attempts=fx.MAX_ATTEMPTS)
+        sent = 0
+        for window_id, kind, attempts in failed:
+            try:
+                last = await asyncio.to_thread(store.effect_result, window_id, kind)
+                await self.app.bot.send_message(chat_id=chat, text=fx.Effects.failure_message(
+                    window_id, kind, attempts, last))
+                await asyncio.to_thread(store.finish_effect, window_id, kind,
+                                        f"failed after {attempts} attempts; reported. {last or ''}".strip(),
+                                        now=int(self.clock()))
                 sent += 1
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # the lease expires and the next pass retries (at most 3 attempts)
-                logger.warning("change-windows: could not announce %s: %s", window_id, type(exc).__name__)
+            except Exception as exc:  # tried again on the next pass
+                logger.debug("change-windows: could not report a failed effect: %s", type(exc).__name__)
         return sent
 
     # -- handlers --------------------------------------------------------------------------------
@@ -314,6 +353,8 @@ class Runtime:
             return
         user_id = query.from_user.id if query.from_user else None
         reply = await asyncio.to_thread(self.actions.on_button, user_id, query.data)
+        if not reply.alert:
+            self.wake()  # an approval may make a start effect due now (late approval)
         await query.answer(reply.toast[:200], show_alert=reply.alert)
         if reply.text is not None and query.message is not None:
             try:
@@ -353,15 +394,17 @@ def wake_all() -> None:
         runtime.wake()
 
 
-def make_factory(*, key: Callable[[], str], actions: Actions,
-                 spawn: Callable[..., Any]) -> Callable[[Any, Any], None]:
+def make_factory(*, key: Callable[[], str], actions: Actions, spawn: Callable[..., Any],
+                 dispatch: Optional[Callable[[str, dict], Any]] = None) -> Callable[[Any, Any], None]:
     """The ``register_platform_handler("telegram", ...)`` factory. ``key`` names the profile
-    (the plugin data dir); ``spawn`` is ``ctx.spawn_task``."""
+    (the plugin data dir); ``spawn`` is ``ctx.spawn_task``; ``dispatch`` is ``ctx.dispatch_tool``
+    (card release through the kanban tools)."""
 
     def change_windows_telegram(native: Any, adapter: Any = None) -> None:
         if native is None:
             return
-        runtime = runtime_for(key(), lambda: Runtime(actions))
+        runtime = runtime_for(key(), lambda: Runtime(actions, effects=fx.Effects(actions.store, actions,
+                                                                                 dispatch=dispatch)))
         runtime.bind(native)
         try:
             if runtime.ensure_scheduler(spawn):

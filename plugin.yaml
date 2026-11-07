@@ -5,6 +5,7 @@ description: >-
   production-write tool calls (kubectl apply, helm upgrade, tofu apply, git push,
   PR merges, configured MCP tools) unless an owner-approved window for their scope is open.
   Agents propose windows; the owner approves, declines or closes them with Telegram buttons.
+  Linked Kanban cards are released when a window opens.
 author: Giorgio De Trane
 license: MIT
 homepage: https://github.com/Gdetrane/hermes-change-windows
