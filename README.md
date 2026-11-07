@@ -3,8 +3,9 @@
 Approved time windows for production changes made by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
 > Status: **in development** (0.1.0-dev0). The guard, the four agent tools and the Telegram
-> buttons (approve, decline, close, `/windows`), card release at window start and the start and
-> end notices work and are tested. The Mini App is planned (see "Roadmap").
+> buttons, card release, start/end notices and Mini App are implemented. Local tests include real
+> HTTP requests and a phone-sized Chromium flow. A real Telegram phone/HTTPS check is still required
+> before release; browser tests use synthetic Telegram signatures.
 
 ## Why
 
@@ -25,7 +26,7 @@ how to ask for one.
    or shared.
 3. **Agents propose, owners approve.** `window_propose` stores a pending window and reports
    overlaps. No tool can approve. Approval needs the owner: a Telegram button from an
-   allow-listed Telegram user id. There is no CLI approval.
+   allow-listed Telegram user id, or signed Mini App initData from that user. There is no CLI approval.
 4. **The guard** checks every tool call against the rules. An unmatched call costs one regular
    expression pass and never touches the store. A matched call needs an open window for every
    scope it touches; otherwise it is blocked. If the store fails, a matched call is blocked
@@ -58,11 +59,34 @@ gateway's bot. It needs no bot token of its own.
 - **Window ends.** At the end: "Window ended", unless it was closed early. A start that the gateway
   missed completely (it was down for the whole window) is reported as missed; its cards stay as they
   were. An effect that fails 3 times (2 minutes apart) is reported to the owner chat.
-- **`/windows`.** Today's and tomorrow's windows, with overlaps.
+- **`/windows`.** Today's and tomorrow's windows, with overlaps. With a Mini App URL configured,
+  proposal messages and `/windows` include **Open list** in private chats. No bot menu, commands
+  list or webhook is changed by the plugin.
 - **Who can act.** Only the Telegram user ids in `approver_telegram_ids`. Empty means nobody. Other
   users get "Only an approver can do this" on a button and no answer to `/windows`. A stale button
   (an old message) is checked against the current state and redrawn.
 - Messages are plain text, so agent-written names and reasons cannot add formatting or links.
+
+## Mini App
+
+Set `miniapp_url` to your HTTPS URL and proxy it to `127.0.0.1:18782` (or your configured loopback
+host/port). There is no hosted service: you publish HTTPS yourself. Open **Open list** in a private
+chat with the bot. The page uses Telegram's theme, shows today plus seven calendar days, flags
+exclusive overlaps in red, and offers Approve / Decline / Close and the last 20 audit rows. Names
+and reasons render as text. Command previews and session/task ids are never sent to this page.
+
+Every API request verifies Telegram's Ed25519 signature and the current approver allow-list.
+Read sessions last one hour; decisions require initData no older than ten minutes. Reopen the
+Mini App when the session expires. Writes are POST-only with a client idempotency key: the decision
+and its original result are stored atomically, so a retry after a lost response or restart cannot
+apply it twice. Reusing a key for a different action is refused. Original replay results can be
+stale; the page refreshes current state after every action. Keys are retained in the plugin database.
+Requests are limited to 120 reads and 30 writes per approver per minute in each gateway process.
+There are no cookies, CORS headers or HTTP access logs. Binding outside loopback is refused.
+
+The listener is optional (`miniapp_url` empty disables it), one per profile, started with Telegram.
+A reconnect reuses it and rebinds bot identity; plugin unload closes it. If the port is occupied,
+check configuration and restart the gateway; the guard and Telegram buttons continue working.
 
 ## Kanban cards
 
@@ -87,6 +111,10 @@ capacity. A `triage` card cannot be released through any public surface, so it i
 | `disabled_rules` | `[]` | Default rule ids to turn off. `self-protect` cannot be turned off. |
 | `approver_telegram_ids` | `[]` | Telegram user ids that may approve, decline and close windows and read `/windows`. Empty = nobody. |
 | `owner_chat_id` | `0` | Chat that gets proposal messages. `0` = the private chat of the first approver. |
+| `miniapp_url` | empty | Your HTTPS URL; empty disables the listener and Open list buttons. |
+| `miniapp_host` | `127.0.0.1` | Loopback listen address only (also accepts `::1` or `localhost`). |
+| `miniapp_port` | `18782` | Listener port; choose a distinct port for each profile. |
+| `telegram_bot_id` | `0` | Public bot id; 0 discovers it from the initialized bot. Never enter a token. |
 | `max_window_hours` | `8` | Longest window an agent may propose. |
 | `audit_command_preview` | `false` | Store a masked preview of matched `terminal` commands. Masking is best effort. |
 
@@ -133,11 +161,15 @@ line.
   are not parsed); disable `git-push` and add a narrower rule if your agent pushes feature branches.
   `kubectl exec` counts as a write. A resource named `delete` in `kubectl get configmap delete` is
   blocked. Turn rules off with `disabled_rules`.
-- **Timed effects are at least once.** A message can repeat after a crash between the send and
-  the record; a failed effect is retried after 2 minutes, at most 3 times. A release re-reads the
-  window and each card first, so a retry does not unblock or comment twice. The scheduler runs in
+- **Timed effects use bounded retries.** A message or comment can repeat after a crash between
+  the remote action and the local record; delivery is not guaranteed. There are at most 3 attempts,
+  with a 2-minute lease. A release re-reads the window and each card to avoid repeating completed
+  work where it can observe the result. The scheduler runs in
   the gateway: with the gateway down, cards are released when it comes back (if the window has not
   ended), and the guard keeps working without it.
+- **Telegram availability.** Approvals, Mini App and scheduled effects require the gateway
+  connected to Telegram and `plugins.isolation: in_process`. With no Telegram or with `host`
+  isolation, the guard and tools still work; new windows cannot be approved.
 - **Admission only.** Closing a window blocks later calls; it does not stop a command that already
   started.
 
@@ -148,18 +180,19 @@ line.
   scope, window, session/task ids and the argument size or names, not the values. With
   `audit_command_preview: true` it also stores a masked command preview (commands longer than 2000
   characters are omitted); masking is best effort, so a secret can remain. Turning the setting off
-  does not clean old rows: purge them (planned owner action; `Store.purge_previews()` today) and
+  does not clean old rows: `Store.purge_previews()` can blank stored previews. The gateway scheduler
+  prunes audit rows older than 90 days at startup and daily (no pruning while the gateway is off);
   remember that SQLite and backups can keep old pages. Treat the database as sensitive.
 - **Network:** messages to the configured owner chat, and answers to button presses and
-  `/windows`, through the gateway's own Telegram bot. Planned: a Mini App page that loads
-  Telegram's `telegram-web-app.js` in the Telegram client.
+  `/windows`, through the gateway's own Telegram bot. The Mini App page loads
+  Telegram's `telegram-web-app.js` from telegram.org in the Telegram client.
 - **Background work:** inside the gateway, when Telegram connects: one supervised task per profile
   (`ctx.spawn_task`) that sends proposal messages and the start and end notices, and releases
-  linked cards. Planned: one HTTP listener on `127.0.0.1` for the Mini App, which you publish
-  yourself.
+  linked cards. When configured, a second supervised task serves the Mini App on loopback
+  (default `127.0.0.1`); you publish its HTTPS URL yourself.
 - **Kanban:** unblocks and comments on the cards a window links, through the kanban tools
   (`kanban_show`, `kanban_unblock`, `kanban_comment`), when the window opens.
-- **Credentials:** the plugin reads none and asks for none. The planned Mini App verifies Telegram
+- **Credentials:** the plugin reads none and asks for none. The Mini App verifies Telegram
   `initData` with Telegram's published Ed25519 key and the public bot id, so the plugin never holds
   the bot token. (An opted-in command preview can contain a secret that masking missed.)
 - **Plugin isolation:** the Telegram parts need `plugins.isolation: in_process` (the default). Under
@@ -168,8 +201,7 @@ line.
 
 ## Roadmap
 
-- Mini App: a list of windows with overlap badges, approve / decline / close, recent audit rows.
-  Later: timeline lanes, emergency window.
+- Later: timeline lanes and emergency windows.
 - Later: reminders before a window, check-in for `presence_required` windows (today such a window
   does not open, and its cards are not released), `window_propose` refusing triage cards up front.
 - CLI: `hermes change-windows list` (read-only; approvals stay in Telegram).
@@ -178,13 +210,15 @@ line.
 
 ```bash
 cd tests && uv run --no-project --with 'pytest>=8,<9' --with 'cryptography>=42,<51' --with 'pyyaml>=6,<7' \
-  --with 'python-telegram-bot>=22,<23' python -m pytest -q
+  --with 'python-telegram-bot>=22,<23' --with 'aiohttp>=3.14,<4' \
+  --with 'playwright>=1.55,<2' python -m pytest -q
 cd .. && dev/scratch-env.sh hermes plugins doctor . --ci
 dev/scratch-env.sh hermes plugins validate . --install-deps
 ```
 
 The Telegram tests use real python-telegram-bot objects with an offline fake Bot API (no
-network, no token); without `python-telegram-bot` they are skipped.
+network, no token). HTTP tests use generated signing keys; the browser test uses system `chromium`
+and a synthetic Telegram SDK. Without PTB or Playwright/Chromium their respective tests are skipped.
 
 `dev/scratch-env.sh` runs a command with a throwaway `HERMES_HOME` and Kanban DB, a clean
 environment, `KUBECONFIG=/dev/null`, stub cluster and forge CLIs first in `PATH`, a `git` that
@@ -194,6 +228,21 @@ integration test, with synthetic fixtures only. For a demo against a throwaway l
 [kind](https://kind.sigs.k8s.io/) cluster, set `CW_KIND_KUBECONFIG` to the kubeconfig that
 `kind create cluster --kubeconfig <file>` wrote: only `kubectl` then reaches that cluster (loopback
 servers and `kind-*` names only; options that pick another cluster or identity are refused).
+
+### Scratch phone check
+
+`dev/run-demo.sh` requires `CW_HERMES_CORE` (a pinned checkout with its uv-synced messaging extra)
+and `CW_MINIAPP_URL` (your HTTPS URL). `CW_DEMO_TOKEN_FILE` points to a private env file containing
+`TELEGRAM_BOT_TOKEN` (default: `../.secrets/demo-bot.env`). It creates a fresh scratch profile,
+prints a short-lived `/pair` code, then queues two synthetic overlapping proposals. Use the phone
+to approve one, decline the other and close. Stop with Ctrl-C. It uses the real Hermes plugin
+manager and PTB handlers, with direct polling to avoid changing shared bot commands/menu/webhooks;
+it does not run a model or cluster commands. Do not run another poller on the same bot concurrently.
+
+`dev/run-demo.sh --smoke` initializes the demo bot, checks loopback page 200 and unauthorized API
+401, then shuts down without polling or sending messages. No model key is needed for these checks.
+The scratch profile contains the paired user id and URL; keep it private. The token is read into
+memory inside the scratch environment and is never copied into that profile.
 
 ## License
 
