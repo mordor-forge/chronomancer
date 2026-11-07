@@ -22,6 +22,13 @@
 #     git -C <dir> checkout <release tag or commit>
 #     (cd <dir> && uv sync --locked --extra messaging --python 3.14)
 #
+# - Optional local kind cluster: CW_KIND_KUBECONFIG=<kubeconfig written by `kind create cluster
+#   --kubeconfig ...`> copies that file into the scratch dir and replaces only the kubectl stub with
+#   a wrapper pinned to the copy. It refuses a kubeconfig whose servers are not https://127.0.0.1 or
+#   that names a cluster, context or user not called kind-*, and refuses kubectl options that pick
+#   another cluster or identity (--kubeconfig, --context, --cluster, --server/-s, --user, --token,
+#   --as*). helm, argocd and the rest stay stubs. For demos against a throwaway kind cluster only.
+#
 # What it does not do without CW_HERMES_CORE: HOME stays your real home, because an installed Hermes
 # finds its dependency environment through it. Files under HOME stay readable. In both modes,
 # absolute paths (/usr/bin/kubectl) bypass the stubs. Use synthetic fixtures only.
@@ -47,6 +54,39 @@ done
 exec '${REAL_GIT:-/bin/false}' "\$@"
 EOF
 chmod +x "$SCRATCH/stubbin/git"
+RUN_KUBECONFIG=/dev/null
+if [ -n "${CW_KIND_KUBECONFIG:-}" ]; then
+  case "$CW_KIND_KUBECONFIG" in
+    /*) ;;
+    *) echo "scratch-env: CW_KIND_KUBECONFIG must be an absolute path" >&2; exit 2 ;;
+  esac
+  case "$CW_KIND_KUBECONFIG" in *:*|*"'"*) echo "scratch-env: CW_KIND_KUBECONFIG contains ':' or a quote; refusing" >&2; exit 2 ;; esac
+  [ -f "$CW_KIND_KUBECONFIG" ] || { echo "scratch-env: no kubeconfig at $CW_KIND_KUBECONFIG" >&2; exit 2; }
+  servers=$(grep -E '^[[:space:]]*server:' "$CW_KIND_KUBECONFIG" || true)
+  if [ -z "$servers" ] || printf '%s\n' "$servers" | grep -vqE 'server:[[:space:]]*https://127\.0\.0\.1:[0-9]+[[:space:]]*$'; then
+    echo "scratch-env: CW_KIND_KUBECONFIG has a server that is not https://127.0.0.1; refusing" >&2; exit 2
+  fi
+  if grep -E '^[[:space:]]*(- )?name:' "$CW_KIND_KUBECONFIG" | grep -vqE 'name:[[:space:]]*kind-[A-Za-z0-9._-]+[[:space:]]*$'; then
+    echo "scratch-env: CW_KIND_KUBECONFIG names a cluster, context or user that is not kind-*; refusing" >&2; exit 2
+  fi
+  REAL_KUBECTL=$(command -v kubectl || true)
+  [ -n "$REAL_KUBECTL" ] || { echo "scratch-env: kubectl not found" >&2; exit 2; }
+  case "$REAL_KUBECTL" in *"'"*) echo "scratch-env: kubectl path contains a single quote; refusing" >&2; exit 2 ;; esac
+  RUN_KUBECONFIG="$SCRATCH/kind-kubeconfig"
+  (umask 077 && cp "$CW_KIND_KUBECONFIG" "$RUN_KUBECONFIG")
+  cat > "$SCRATCH/stubbin/kubectl" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    --kubeconfig*|--context*|--cluster*|--server*|-s|-s=*|--user*|--token*|--as|--as=*|--as-*)
+      echo "kind-kubectl: '\$a' is refused in the scratch env (pinned to the kind cluster)" >&2; exit 99 ;;
+  esac
+done
+exec '$REAL_KUBECTL' --kubeconfig '$RUN_KUBECONFIG' "\$@"
+EOF
+  chmod +x "$SCRATCH/stubbin/kubectl"
+  echo "scratch: kubectl -> kind cluster ($RUN_KUBECONFIG)" >&2
+fi
 RUN_HOME=$HOME
 RUN_PATH="$SCRATCH/stubbin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 if [ -n "${CW_HERMES_CORE:-}" ]; then
@@ -68,7 +108,7 @@ set -- env -i \
   HERMES_HOME="$SCRATCH/home" \
   HERMES_KANBAN_DB="$SCRATCH/kanban/kanban.db" \
   HERMES_KANBAN_BOARD=scratch \
-  KUBECONFIG=/dev/null \
+  KUBECONFIG="$RUN_KUBECONFIG" \
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=/bin/false \
   PATH="$RUN_PATH" \
   LANG=C.UTF-8 TERM=dumb TMPDIR="$SCRATCH/tmp" \

@@ -190,7 +190,10 @@ network, no token); without `python-telegram-bot` they are skipped.
 environment, `KUBECONFIG=/dev/null`, stub cluster and forge CLIs first in `PATH`, a `git` that
 refuses `push`, no global git config, and a 2 GiB memory cap (it refuses to run without one). It
 keeps your real `HOME`, because Hermes finds its dependency environment there. Use it for every
-integration test, with synthetic fixtures only.
+integration test, with synthetic fixtures only. For a demo against a throwaway local
+[kind](https://kind.sigs.k8s.io/) cluster, set `CW_KIND_KUBECONFIG` to the kubeconfig that
+`kind create cluster --kubeconfig <file>` wrote: only `kubectl` then reaches that cluster (loopback
+servers and `kind-*` names only; options that pick another cluster or identity are refused).
 
 ## License
 
