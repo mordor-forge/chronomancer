@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -40,6 +40,15 @@ CREATE TABLE IF NOT EXISTS windows (
     CHECK (end_ts > start_ts)
 );
 CREATE INDEX IF NOT EXISTS windows_scope_start ON windows (scope, start_ts);
+CREATE TABLE IF NOT EXISTS api_actions (
+    user_id INTEGER NOT NULL,
+    request_key TEXT NOT NULL,
+    window_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    response TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, request_key)
+);
 CREATE TABLE IF NOT EXISTS audit (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     ts         INTEGER NOT NULL,
@@ -250,27 +259,32 @@ class Store:
     def decide(self, window_id: str, *, approve: bool, by: str, now: int) -> Window:
         """Owner decision on a pending window. Approval re-checks overlaps in the same transaction."""
         with self._write() as conn:
-            rows = self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))
-            if not rows:
-                raise StoreError(f"unknown window {window_id}")
-            window = rows[0]
-            if window.state != "pending":
-                raise StoreError(f"window {window_id} is {window.state}, not pending")
-            if approve:
-                clash = [w for w in self._rows(
-                    conn, "SELECT * FROM windows WHERE scope = ? AND state = 'approved' AND closed_at IS NULL "
-                          "AND start_ts < ? AND end_ts > ? AND id != ?",
-                    (window.scope, window.end_ts, window.start_ts, window.id)) if window.exclusive or w.exclusive]
-                if clash:
-                    raise StoreError(f"window {window_id} overlaps approved {', '.join(w.id for w in clash)}")
-            conn.execute("UPDATE windows SET state = ?, decided_by = ?, decided_at = ? WHERE id = ?",
-                         ("approved" if approve else "declined", by, now, window_id))
-            if approve:
-                # The gateway's scheduler opens the window (card release, notice) and reports its end.
-                # Queued in the same transaction, so an approval never lacks its timed effects.
-                conn.executemany("INSERT OR IGNORE INTO effects (window_id, kind, due_ts) VALUES (?,?,?)",
-                                 [(window_id, "start", window.start_ts), (window_id, "end", window.end_ts)])
-        return self.get(window_id)  # type: ignore[return-value]
+            self._decide(conn, window_id, approve=approve, by=by, now=now)
+            return self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))[0]
+
+    def _decide(self, conn: sqlite3.Connection, window_id: str, *, approve: bool, by: str, now: int) -> None:
+        rows = self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))
+        if not rows:
+            raise StoreError(f"unknown window {window_id}")
+        window = rows[0]
+        if window.state != "pending":
+            raise StoreError(f"window {window_id} is {window.state}, not pending")
+        if approve:
+            if window.end_ts <= now:
+                raise StoreError(f"window {window_id} has already ended; ask for a new one")
+            clash = [w for w in self._rows(
+                conn, "SELECT * FROM windows WHERE scope = ? AND state = 'approved' AND closed_at IS NULL "
+                      "AND start_ts < ? AND end_ts > ? AND id != ?",
+                (window.scope, window.end_ts, window.start_ts, window.id)) if window.exclusive or w.exclusive]
+            if clash:
+                raise StoreError(f"window {window_id} overlaps approved {', '.join(w.id for w in clash)}")
+        conn.execute("UPDATE windows SET state = ?, decided_by = ?, decided_at = ? WHERE id = ?",
+                     ("approved" if approve else "declined", by, now, window_id))
+        if approve:
+            # The gateway's scheduler opens the window (card release, notice) and reports its end.
+            # Queued in the same transaction, so an approval never lacks its timed effects.
+            conn.executemany("INSERT OR IGNORE INTO effects (window_id, kind, due_ts) VALUES (?,?,?)",
+                             [(window_id, "start", window.start_ts), (window_id, "end", window.end_ts)])
 
     def check_in(self, window_id: str, *, by: str, now: int) -> Window:
         with self._write() as conn:
@@ -284,21 +298,47 @@ class Store:
     def close(self, window_id: str, *, by: str, reason: str, now: int) -> Window:
         """Close early (approved) or cancel (pending), atomically. Closing only removes permission."""
         with self._write() as conn:
-            rows = self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))
-            if not rows:
-                raise StoreError(f"unknown window {window_id}")
-            window = rows[0]
-            if window.state == "pending":
-                new_state = "cancelled"
-            elif window.state == "approved" and window.closed_at is None:
-                new_state = "closed"
+            self._close(conn, window_id, by=by, reason=reason, now=now)
+            return self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))[0]
+
+    def _close(self, conn: sqlite3.Connection, window_id: str, *, by: str, reason: str, now: int) -> None:
+        rows = self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))
+        if not rows:
+            raise StoreError(f"unknown window {window_id}")
+        window = rows[0]
+        if window.state == "pending":
+            new_state = "cancelled"
+        elif window.state == "approved" and window.closed_at is None:
+            new_state = "closed"
+        else:
+            raise StoreError(f"window {window_id} is {window.state}; nothing to close")
+        conn.execute("UPDATE windows SET state = ?, closed_at = ?, close_reason = ? WHERE id = ?",
+                     (new_state, now, f"{by}: {reason}", window_id))
+
+    def api_action(self, user_id: int, request_key: str, window_id: str, action: str, now: int) -> dict[str, Any]:
+        """Commit the action and replay result together. Callers must authenticate/authorize first.
+
+        Keys are scoped to an approver, survive restart, and cannot be reused for another action.
+        A replay returns the original result; clients refresh the list to see subsequent changes.
+        """
+        with self._write() as conn:
+            row = conn.execute("SELECT window_id, action, response FROM api_actions "
+                               "WHERE user_id = ? AND request_key = ?", (user_id, request_key)).fetchone()
+            if row:
+                if row[:2] != (window_id, action):
+                    raise StoreError("idempotency key already used for a different action")
+                return json.loads(row[2])
+            by = f"telegram:{user_id}"
+            if action in ("approve", "decline"):
+                self._decide(conn, window_id, approve=action == "approve", by=by, now=now)
+            elif action == "close":
+                self._close(conn, window_id, by=by, reason="closed from Mini App", now=now)
             else:
-                raise StoreError(f"window {window_id} is {window.state}; nothing to close")
-            conn.execute("UPDATE windows SET state = ?, closed_at = ?, close_reason = ? WHERE id = ?",
-                         (new_state, now, f"{by}: {reason}", window_id))
-        closed = self.get(window_id)
-        assert closed is not None and not closed.is_open(now)
-        return closed
+                raise StoreError("unknown action")
+            result = self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))[0].to_dict()
+            conn.execute("INSERT INTO api_actions VALUES (?,?,?,?,?,?)",
+                         (user_id, request_key, window_id, action, json.dumps(result), now))
+            return result
 
     def record_audit(self, *, now: int, verdict: str, tool: str, rule_ids: list[str], scopes: list[str],
                      preview: str, window_id: Optional[str] = None, session_id: str = "", task_id: str = "") -> None:
@@ -332,6 +372,11 @@ class Store:
             return [dict(zip(cols, r)) for r in cur.fetchall()]
         finally:
             conn.close()
+
+    def prune_audit(self, before_ts: int) -> int:
+        """Remove rows older than the retention boundary; never include previews in a response."""
+        with self._write() as conn:
+            return conn.execute("DELETE FROM audit WHERE ts < ?", (before_ts,)).rowcount
 
     # -- timed effects (announce on proposal; start and end on approval; reminders are a stretch) ---
     def ensure_effects(self, window: Window, *, reminder_s: int) -> None:

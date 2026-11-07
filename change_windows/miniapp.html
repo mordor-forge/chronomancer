@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Change windows</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{color-scheme:light dark;--bg:#f5f6f8;--text:#17202b;--hint:#667080;--card:#fff;--button:#2368d5;--button-text:#fff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,sans-serif}
+main{max-width:680px;margin:auto;padding:24px 18px calc(28px + env(safe-area-inset-bottom))}
+h1{font-size:28px;letter-spacing:-.7px;margin:0}h2{font-size:19px;margin:0 0 12px}p{margin:6px 0 14px}.hint,small{color:var(--hint)}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}button{font:inherit;cursor:pointer;border:0;border-radius:12px;padding:12px 16px;background:var(--button);color:var(--button-text);min-height:46px}button:disabled{opacity:.5;cursor:wait}
+.secondary{background:var(--card);color:var(--text);border:1px solid var(--hint)}.window{display:block;text-align:left;width:100%;padding:16px;margin:10px 0;background:var(--card);color:var(--text);border:1px solid color-mix(in srgb,var(--hint) 25%,transparent)}
+.window strong{display:block;font-size:18px}.window small{display:block;margin-top:4px}.badge{display:inline-block;font-size:13px;font-weight:650;padding:3px 8px;border-radius:6px;margin-top:8px;background:#ffe4e4;color:#a11326}.state{text-transform:uppercase;font-size:11px;letter-spacing:.8px;font-weight:700;color:var(--hint)}
+#notice{white-space:pre-wrap;color:var(--text)}section{margin-top:28px}#audit{list-style:none;padding:0;font-size:14px}#audit li{padding:12px 0;border-bottom:1px solid color-mix(in srgb,var(--hint) 25%,transparent);overflow-wrap:anywhere}dialog{width:calc(100% - 24px);max-width:620px;max-height:90dvh;border:0;border-radius:20px;padding:24px;background:var(--bg);color:var(--text)}dialog::backdrop{background:#0008}#detail-name{padding-right:16px}#detail-reason{white-space:pre-wrap;overflow-wrap:anywhere}#detail-meta{white-space:pre-wrap}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}.danger{background:#ae2536;color:#fff}#dismiss{float:right;background:var(--card);color:var(--text);margin:0 0 10px 10px}#detail-status{white-space:pre-wrap}button:focus-visible{outline:3px solid var(--button);outline-offset:3px}
+</style>
+</head>
+<body>
+<main>
+<header><div><h1>Change windows</h1><small>Today + the next 7 days</small></div><button id="refresh" class="secondary">Refresh</button></header>
+<p id="notice" role="status" aria-live="polite">Loading windows…</p>
+<div id="windows" aria-label="Change windows"></div>
+<section><h2>Recent activity</h2><p class="hint">Last 20 matched calls · metadata only</p><ol id="audit"></ol></section>
+</main>
+<dialog id="detail" aria-labelledby="detail-name">
+<button id="dismiss" aria-label="Dismiss details">Done</button><div class="state" id="detail-state"></div>
+<h2 id="detail-name"></h2><p id="detail-meta" class="hint"></p><p id="detail-reason"></p>
+<div id="detail-overlaps"></div><p id="detail-status" role="status" aria-live="polite"></p>
+<div class="actions"><button id="approve">Approve</button><button id="decline" class="secondary">Decline</button><button id="close" class="danger">Close window</button></div>
+</dialog>
+<script>
+'use strict';
+const tg = window.Telegram?.WebApp;
+const $ = id => document.getElementById(id);
+let current = null, serverNow = 0, busy = false;
+const pendingKeys = new Map();
+function theme() {
+  const t = tg?.themeParams || {};
+  for (const [css, key] of Object.entries({'bg':'bg_color','text':'text_color','hint':'hint_color','card':'secondary_bg_color','button':'button_color','button-text':'button_text_color'})) {
+    if (/^#[0-9a-f]{6}$/i.test(t[key] || '')) document.documentElement.style.setProperty('--' + css, t[key]);
+  }
+}
+theme(); tg?.onEvent('themeChanged', theme); tg?.ready(); tg?.expand();
+async function api(path, options = {}) {
+  if (!tg?.initData) throw new Error('Open this list from a private chat with the Telegram bot.');
+  const response = await fetch(path, {...options, cache:'no-store', credentials:'omit',
+    headers:{'X-Telegram-Init-Data':tg.initData, ...options.headers}});
+  const body = await response.json();
+  if (!response.ok) {
+    const error = new Error(body.error || 'Request failed.');
+    error.status = response.status;
+    throw error;
+  }
+  return body;
+}
+function node(tag, text, cls) {
+  const el = document.createElement(tag); el.textContent = text;
+  if (cls) el.className = cls;
+  return el;
+}
+function overlaps(w, parent) {
+  if (w.overlaps.length) parent.append(node('span', 'overlaps ' + w.overlaps.join(', '), 'badge'));
+}
+function show(w) {
+  current = w;
+  $('detail-state').textContent = w.open ? 'open now' : w.state;
+  $('detail-name').textContent = w.name;
+  $('detail-meta').textContent = `${w.id} · ${w.scope}\n${w.span}\n${w.exclusive ? 'Exclusive' : 'Shared'}${w.cards.length ? '\nCards: ' + w.cards.map(c => c.task_id).join(', ') : ''}`;
+  $('detail-reason').textContent = w.reason;
+  $('detail-overlaps').replaceChildren(); overlaps(w, $('detail-overlaps'));
+  for (const action of ['approve', 'decline', 'close']) {
+    const allowed = action === 'close' ? ['pending','approved'].includes(w.state) : w.state === 'pending' && w.end_ts > serverNow;
+    $(action).hidden = !allowed; $(action).disabled = busy;
+  }
+}
+async function refresh() {
+  $('refresh').disabled = true;
+  try {
+    const [data, activity] = await Promise.all([api('/api/windows'), api('/api/audit')]);
+    serverNow = data.now;
+    $('windows').replaceChildren();
+    for (const w of data.windows) {
+      const item = node('button', '', 'window');
+      item.append(node('span', w.open ? 'open now' : w.state, 'state'), node('strong', w.name),
+        node('small', w.span), node('small', `${w.id} · ${w.scope}`));
+      overlaps(w, item);
+      item.onclick = () => { $('detail-status').textContent = ''; show(w); $('detail').showModal(); };
+      $('windows').append(item);
+    }
+    $('notice').textContent = data.windows.length ? '' : 'No windows in this period. Ask your agent to propose one.';
+    $('audit').replaceChildren();
+    for (const row of activity.audit) {
+      $('audit').append(node('li', `${new Date(row.ts * 1000).toLocaleString()} · ${row.verdict}\n${row.tool} · ${JSON.parse(row.scopes).join(', ')}${row.window_id ? ' · ' + row.window_id : ''}`));
+    }
+    if (!activity.audit.length) $('audit').append(node('li', 'No matched calls recorded yet.'));
+    if (current && $('detail').open) {
+      const w = data.windows.find(w => w.id === current.id);
+      if (w) show(w); else { const detail = await api('/api/windows/' + current.id); show(detail.window); }
+    }
+  } catch (error) { $('notice').textContent = error.message; }
+  finally { $('refresh').disabled = false; }
+}
+async function act(action) {
+  if (busy || !current) return;
+  busy = true; show(current);
+  const request = current.id + '/' + action;
+  if (!pendingKeys.has(request)) pendingKeys.set(request, crypto.randomUUID());
+  $('detail-status').textContent = 'Saving…';
+  try {
+    await api('/api/windows/' + request, {method:'POST', headers:{'Idempotency-Key':pendingKeys.get(request)}});
+    pendingKeys.delete(request);
+    $('detail-status').textContent = action === 'approve' ? 'Approved.' : action === 'decline' ? 'Declined.' : 'Closed. Later matched calls need another open window.';
+  } catch (error) {
+    // Keep the same key after a network/server failure: the decision may already have committed.
+    if (error.status && error.status < 500 && error.status !== 429) pendingKeys.delete(request);
+    $('detail-status').textContent = error.message;
+  } finally { busy = false; await refresh(); if (current) show(current); }
+}
+for (const action of ['approve','decline','close']) $(action).onclick = () => act(action);
+$('refresh').onclick = refresh;
+$('dismiss').onclick = () => $('detail').close();
+refresh();
+</script>
+</body>
+</html>

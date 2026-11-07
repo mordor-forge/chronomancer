@@ -60,3 +60,22 @@ config_schema:
     default: false
     label: Store masked command text in the audit log
     description: "Off: audit rows keep tool, rule ids, scope and size only. On: a masked preview of matched terminal commands is stored; masking is best effort, so secrets can remain."
+  miniapp_url:
+    type: str
+    default: ""
+    label: Mini App HTTPS URL
+    description: "Your HTTPS URL pointing to the loopback listener. Empty disables the Mini App. Open list appears only in private chats."
+  miniapp_host:
+    type: str
+    default: "127.0.0.1"
+    label: Mini App listen address
+    description: "Loopback address only. Publish HTTPS through your own reverse proxy."
+  miniapp_port:
+    type: int
+    default: 18782
+    label: Mini App listen port
+  telegram_bot_id:
+    type: int
+    default: 0
+    label: Public Telegram bot id
+    description: "0 discovers the public id from the initialized Telegram bot. This is not a bot token."

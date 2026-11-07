@@ -201,13 +201,13 @@ class Actions:
 
 # -- PTB wiring -------------------------------------------------------------------------------------
 
-def _markup(rows: list[list[tuple[str, str]]]) -> Any:
-    if not rows:
-        return None
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+def _markup(rows: list[list[tuple[str, str]]], url: Optional[str] = None) -> Any:
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
-    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=data) for label, data in row]
-                                 for row in rows])
+    buttons = [[InlineKeyboardButton(label, callback_data=data) for label, data in row] for row in rows]
+    if url:
+        buttons.append([InlineKeyboardButton("Open list", web_app=WebAppInfo(url))])
+    return InlineKeyboardMarkup(buttons) if buttons else None
 
 
 class Runtime:
@@ -221,11 +221,13 @@ class Runtime:
         self.clock = clock or actions.clock
         self.app: Any = None
         self.task: Optional[asyncio.Task] = None
+        self.server_task: Optional[asyncio.Task] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._wake: Optional[asyncio.Event] = None
         self._wired: "weakref.WeakSet[Any]" = weakref.WeakSet()
         self._warned_no_chat = False
         self._active = False  # the last pass could run effects (application running, owner chat set)
+        self._prune_at = 0
         self.binds = 0
 
     # -- factory side ----------------------------------------------------------------------------
@@ -248,6 +250,30 @@ class Runtime:
         self.loop = loop
         self._wake = asyncio.Event()
         self.task = spawn(self.run(), name="change-windows:scheduler")
+        return True
+
+    def miniapp_url(self, chat: Any) -> Optional[str]:
+        from .miniapp import public_url
+
+        return public_url(self.actions.setting) if chat is not None and int(chat) > 0 else None
+
+    def bot_id(self) -> Optional[int]:
+        configured = _ids(self.actions.setting("telegram_bot_id", 0))
+        if configured and configured[0] > 0:
+            return configured[0]
+        try:
+            return self.app.bot.id if self.app is not None else None
+        except RuntimeError:  # PTB has not initialized the current bot yet
+            return None
+
+    def ensure_server(self, spawn: Callable[..., Any]) -> bool:
+        from .miniapp import public_url, serve
+
+        if not public_url(self.actions.setting):
+            return False
+        if self.server_task is not None and not self.server_task.done():
+            return False
+        self.server_task = spawn(serve(self), name="change-windows:miniapp")
         return True
 
     def wake(self) -> None:
@@ -292,6 +318,10 @@ class Runtime:
         """One pass: run the due effects, then report effects that used every attempt.
         Returns how many messages were sent."""
         self._active = False
+        now = int(self.clock())
+        if now >= self._prune_at:
+            await asyncio.to_thread(self.actions.store.prune_audit, now - 90 * 86400)
+            self._prune_at = now + 86400
         if not self.ready():
             return 0
         chat = await asyncio.to_thread(self.actions.owner_chat)
@@ -312,7 +342,7 @@ class Runtime:
                 outcome = await asyncio.to_thread(self.effects.run, window_id, kind, now)
                 if outcome.text is not None:
                     await self.app.bot.send_message(chat_id=chat, text=outcome.text,
-                                                    reply_markup=_markup(outcome.buttons))
+                                                    reply_markup=_markup(outcome.buttons, self.miniapp_url(chat)))
                     sent += 1
                 await asyncio.to_thread(store.finish_effect, window_id, kind, outcome.result, now=int(self.clock()))
             except asyncio.CancelledError:
@@ -358,7 +388,8 @@ class Runtime:
         await query.answer(reply.toast[:200], show_alert=reply.alert)
         if reply.text is not None and query.message is not None:
             try:
-                await query.edit_message_text(reply.text, reply_markup=_markup(reply.buttons))
+                await query.edit_message_text(reply.text, reply_markup=_markup(reply.buttons, self.miniapp_url(
+                    query.message.chat.id if query.message.chat.type == "private" else None)))
             except Exception as exc:  # "message is not modified", or an old message: the store is right
                 logger.debug("change-windows: could not edit the message: %s", type(exc).__name__)
 
@@ -369,7 +400,8 @@ class Runtime:
             return
         if not await asyncio.to_thread(self.actions.is_approver, user.id):
             return  # say nothing to people who are not approvers
-        await message.reply_text(await asyncio.to_thread(self.actions.windows_text))
+        await message.reply_text(await asyncio.to_thread(self.actions.windows_text), reply_markup=_markup(
+            [], self.miniapp_url(message.chat.id if message.chat.type == "private" else None)))
 
 
 # -- one runtime per profile in this process ----------------------------------------------------------
@@ -409,6 +441,7 @@ def make_factory(*, key: Callable[[], str], actions: Actions, spawn: Callable[..
         try:
             if runtime.ensure_scheduler(spawn):
                 logger.info("change-windows: Telegram handlers and scheduler started")
+            runtime.ensure_server(spawn)
         except RuntimeError as exc:  # no running loop: buttons work, proposals are not sent
             logger.warning("change-windows: scheduler not started (%s); proposals are not sent to Telegram", exc)
 

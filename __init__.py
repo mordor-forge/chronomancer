@@ -8,8 +8,8 @@ Wiring:
   proposal messages, releases linked Kanban cards at start (``dispatch_tool``: kanban_show,
   kanban_unblock, kanban_comment) and sends the open and end notices.
 
-Planned (not registered yet, so the manifest stays truthful):
-- Mini App (loopback HTTP server started from the Telegram factory).
+- Optional Mini App: one loopback HTTP server started from the Telegram factory, with
+  Telegram-signed initData, an approver allow-list and durable idempotency keys.
 """
 
 from __future__ import annotations

@@ -464,7 +464,12 @@ def test_a_late_approval_opens_the_window_at_once(store):
         w = propose(store, start=NOW - 60, end=NOW + 3600)  # its start has passed; still pending
         await app.initialize()
         await app.start()
-        await asyncio.sleep(0.05)
+        tg._RUNTIMES["/scratch/late"].wake()
+        for _ in range(100):
+            if api.named("sendMessage"):
+                break
+            await asyncio.sleep(0.01)
+        assert api.named("sendMessage")[0]["text"].startswith("Window proposal")
         await app.process_update(button_update(app, OWNER, f"cw:approve:{w.id}"))
         for _ in range(100):
             if any(p["text"].startswith("Window OPEN") for p in api.named("sendMessage")):
@@ -476,7 +481,7 @@ def test_a_late_approval_opens_the_window_at_once(store):
         return api
 
     texts = [p["text"].splitlines()[0] for p in asyncio.run(main()).named("sendMessage")]
-    assert texts == ["Window OPEN: web v2"]  # approved before its announce ran: the announce is skipped
+    assert texts == ["Window proposal: web v2", "Window OPEN: web v2"]
 
 
 # -- register(): isolation fallback, and the real factory from the plugin entry point -------------------
@@ -585,3 +590,81 @@ def test_registered_factory_releases_cards_through_dispatch_tool(tmp_path, monke
     outcome = runtime.effects.run(w.id, "start", NOW)
     assert ctx.dispatched == [("kanban_show", {"task_id": "t_aa0001", "board": "ops"})]
     assert "Not released: t_aa0001 (not found)" in outcome.text
+
+
+def test_miniapp_buttons_are_per_message_and_private_only(store):
+    async def main():
+        app, api = build_app()
+        settings = {'approver_telegram_ids': [OWNER], 'miniapp_url': 'https://example.invalid/windows'}
+        acts = tg.Actions(store, setting=lambda k,d=None: settings.get(k,d), tz=lambda: timezone.utc, clock=lambda: NOW)
+        runtime = tg.Runtime(acts); runtime.bind(app)
+        propose(store)
+        await app.initialize(); await app.start()
+        await runtime.tick()
+        await app.process_update(command_update(app, OWNER))
+        group = command_update(app, OWNER, update_id=3).to_dict()
+        group['message']['chat'] = {'id': -100123, 'type': 'supergroup', 'title': 'Synthetic'}
+        await app.process_update(Update.de_json(group, app.bot))
+        await app.stop(); await app.shutdown()
+        return api
+    api = asyncio.run(main())
+    messages = api.named('sendMessage')
+    for message in messages[:2]:
+        markup = message['reply_markup']
+        if isinstance(markup,str): markup = json.loads(markup)
+        assert markup['inline_keyboard'][-1] == [{'text':'Open list','web_app':{'url':'https://example.invalid/windows'}}]
+    assert messages[2].get('reply_markup') is None
+    assert not {'setChatMenuButton','setMyCommands','setWebhook'} & {n for n,_ in api.calls}
+
+
+def test_listener_rebind_cancel_and_restart(store):
+    import socket
+    from aiohttp import ClientSession
+    async def main():
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1',0)); port = sock.getsockname()[1]
+        settings = {'miniapp_url':'https://example.invalid', 'miniapp_port':port}
+        acts = tg.Actions(store, setting=lambda k,d=None:settings.get(k,d), tz=lambda:timezone.utc)
+        spawn = Spawner()
+        factory = tg.make_factory(key=lambda:'/scratch/server', actions=acts, spawn=spawn)
+        app1,_ = build_app(); app2,_ = build_app()
+        factory(app1); factory(app2)
+        runtime = tg._RUNTIMES['/scratch/server']
+        assert len(spawn.tasks) == 2 and runtime.app is app2
+        assert runtime.bot_id() is None
+        async with ClientSession() as client:
+            for _ in range(100):
+                try:
+                    response = await client.get(f'http://127.0.0.1:{port}/')
+                    break
+                except OSError:
+                    await asyncio.sleep(.01)
+            assert response.status == 200 and 'Change windows' in await response.text()
+            assert (await client.get(f'http://127.0.0.1:{port}/api/windows')).status == 503
+            await app2.initialize()
+            assert runtime.bot_id() == BOT_ID
+            assert (await client.get(f'http://127.0.0.1:{port}/api/windows')).status == 401
+        await spawn.cancel_all()
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1',port))
+        factory(app2)
+        assert len(spawn.tasks) == 4
+        await spawn.cancel_all(); await app2.shutdown()
+    asyncio.run(main())
+
+
+def test_listener_port_collision_logs_once_and_keeps_scheduler(store, caplog):
+    import socket
+    async def main():
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1',0)); sock.listen()
+            settings = {'miniapp_url':'https://example.invalid','miniapp_port':sock.getsockname()[1]}
+            acts = tg.Actions(store, setting=lambda k,d=None:settings.get(k,d), tz=lambda:timezone.utc)
+            spawn = Spawner(); app,_ = build_app()
+            factory = tg.make_factory(key=lambda:'/scratch/collision', actions=acts, spawn=spawn)
+            factory(app); await asyncio.sleep(.05)
+            factory(app); await asyncio.sleep(.01)
+            assert len(spawn.tasks) == 2 and not any(t.done() for t in spawn.tasks)
+            await spawn.cancel_all()
+    asyncio.run(main())
+    assert caplog.text.count('Mini App listener unavailable') == 1
