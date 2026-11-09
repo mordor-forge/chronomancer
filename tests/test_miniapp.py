@@ -204,6 +204,26 @@ def test_rate_limit_and_static_shell(h):
     asyncio.run(main())
 
 
+def test_static_shell_is_loaded_once_per_application(h, monkeypatch):
+    from pathlib import Path
+    original = Path.read_text
+    reads = []
+
+    def read(path, *args, **kwargs):
+        if path.name == 'miniapp.html':
+            reads.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', read)
+
+    async def main():
+        async with TestClient(TestServer(h.app())) as client:
+            bodies = [await (await client.get('/')).text() for _ in range(2)]
+            assert bodies[0] == bodies[1] and 'Change windows' in bodies[0]
+        assert len(reads) == 1
+    asyncio.run(main())
+
+
 def test_eight_local_calendar_days(h):
     from zoneinfo import ZoneInfo
     h.actions.tz = lambda: ZoneInfo('Europe/Prague')

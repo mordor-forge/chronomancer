@@ -52,6 +52,7 @@ def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable
                verify: Callable[..., Any] = verify_ed25519) -> Any:
     from aiohttp import web
 
+    html = Path(__file__).with_name("miniapp.html").read_text()
     user_key = getattr(web, "RequestKey", web.AppKey)("user_id", int)
     buckets: dict[tuple[int, bool], deque[float]] = defaultdict(deque)
 
@@ -93,7 +94,7 @@ def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable
         return response
 
     async def page(request: Any) -> Any:
-        return web.Response(text=Path(__file__).with_name("miniapp.html").read_text(), content_type="text/html")
+        return web.Response(text=html, content_type="text/html")
 
     def list_data() -> dict[str, Any]:
         now = int(actions.clock())
