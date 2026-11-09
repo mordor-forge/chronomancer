@@ -1,5 +1,6 @@
 from change_windows import guard
 from change_windows.rules import build_ruleset
+import pytest
 
 RS = build_ruleset()
 KAPPLY = {"command": "kubectl apply -f deploy.yaml --token=abc123"}
@@ -54,6 +55,27 @@ def test_store_failure_fails_closed():
     hook = guard.make_hook(get_rules=lambda: RS, get_mode=lambda: "enforce", store=Exploding())
     out = hook(tool_name="terminal", args=KAPPLY)
     assert out["action"] == "block" and "store failed" in out["message"]
+
+
+@pytest.mark.parametrize('failure', ['load', 'match'])
+def test_rules_failure_blocks_calls_but_keeps_window_tools_available(failure):
+    class BrokenRules:
+        def match(self, *_):
+            raise RuntimeError('synthetic configuration failure')
+
+    def get_rules():
+        if failure == 'load':
+            raise RuntimeError('synthetic configuration failure')
+        return BrokenRules()
+
+    hook = guard.make_hook(get_rules=get_rules, get_mode=lambda: 'enforce', store=Exploding())
+    for tool in ('window_propose', 'window_list', 'window_next', 'window_close'):
+        assert hook(tool_name=tool, args={}) is None
+    for args in (KAPPLY, {'command': 'ls -la'}):
+        result = hook(tool_name='terminal', args=args)
+        assert result['action'] == 'block'
+        assert 'rules' in result['message'] and 'RuntimeError' in result['message']
+        assert 'do not retry' in result['message']
 
 
 def test_self_protect_blocks_even_inside_any_window(store):

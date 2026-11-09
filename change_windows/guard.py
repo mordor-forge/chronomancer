@@ -140,16 +140,27 @@ def make_hook(
     clock: Callable[[], float] = time.time,
     command_preview: Callable[[], bool] = lambda: False,
 ) -> Callable[..., Optional[dict[str, str]]]:
-    """Build the ``pre_tool_call`` callback. Never raises for a matched call: it blocks instead."""
+    """Build a fail-closed callback. Unmatched calls never touch the store.
+
+    Rules failures block calls whose match cannot be determined, except the four window tools
+    used to inspect, propose or remove permission. Store/policy failures block matched calls.
+    """
 
     def pre_tool_call(tool_name: str = "", args: Optional[dict[str, Any]] = None, task_id: str = "",
                       session_id: str = "", **_: Any) -> Optional[dict[str, str]]:
         args = args if isinstance(args, dict) else {}
-        rules = get_rules()
-        if not rules.match(tool_name, args):
-            return None  # the fast path: most calls never touch the store
-        now = int(clock())
         try:
+            rules = get_rules()
+            if not rules.match(tool_name, args):
+                return None  # the fast path: most calls never touch the store
+        except Exception as exc:
+            if tool_name in ("window_propose", "window_list", "window_next", "window_close"):
+                return None
+            return {"action": "block",
+                    "message": f"change-windows: blocked because its rules failed ({type(exc).__name__}). "
+                               "Tell the user; do not retry."}
+        try:
+            now = int(clock())
             decision = decide(tool_name, args, rules=rules, store=store, mode=get_mode(), now=now, tz=tz())
         except Exception as exc:  # fail closed on a matched call
             return {"action": "block",
