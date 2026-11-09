@@ -4,8 +4,9 @@ Approved time windows for production changes made by [Hermes Agent](https://gith
 
 > Status: **in development** (0.1.0-dev0). The guard, the four agent tools and the Telegram
 > buttons, card release, start/end notices and Mini App are implemented. Local tests include real
-> HTTP requests and a phone-sized Chromium flow. A real Telegram phone/HTTPS check is still required
-> before release; browser tests use synthetic Telegram signatures.
+> HTTP requests and a phone-sized Chromium flow. The real Telegram phone/HTTPS check was waived
+> by the owner, not passed; browser tests use synthetic Telegram signatures. Real phone, HTTPS
+> routing and Telegram-signed initData remain unverified.
 
 ## Why
 
@@ -244,20 +245,7 @@ integration test, with synthetic fixtures only. For a demo against a throwaway l
 `kind create cluster --kubeconfig <file>` wrote: only `kubectl` then reaches that cluster (loopback
 servers and `kind-*` names only; options that pick another cluster or identity are refused).
 
-### Scratch phone check
-
-`dev/run-demo.sh` requires `CW_HERMES_CORE` (a pinned checkout with its uv-synced messaging extra)
-and `CW_MINIAPP_URL` (your HTTPS URL). `CW_DEMO_TOKEN_FILE` points to a private env file containing
-`TELEGRAM_BOT_TOKEN` (default: `../.secrets/demo-bot.env`). It creates a fresh scratch profile,
-prints a short-lived `/pair` code, then queues two synthetic overlapping proposals. Use the phone
-to approve one, decline the other and close. Stop with Ctrl-C. It uses the real Hermes plugin
-manager and PTB handlers, with direct polling to avoid changing shared bot commands/menu/webhooks;
-it does not run a model or cluster commands. Do not run another poller on the same bot concurrently.
-
-`dev/run-demo.sh --smoke` initializes the demo bot, checks loopback page 200 and unauthorized API
-401, then shuts down without polling or sending messages. No model key is needed for these checks.
-The scratch profile contains the paired user id and URL; keep it private. The token is read into
-memory inside the scratch environment and is never copied into that profile.
+The demo launcher used for the video is not part of the plugin.
 
 ## License
 
