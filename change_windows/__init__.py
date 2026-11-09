@@ -4,4 +4,4 @@ Pure Python (stdlib, plus ``cryptography`` for the Ed25519 initData check) so th
 without Hermes. The Hermes wiring lives in the plugin's top-level ``__init__.py``.
 """
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"

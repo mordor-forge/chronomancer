@@ -1,5 +1,5 @@
 name: change-windows
-version: 0.1.0-dev0
+version: 0.1.0
 description: >-
   Approved time windows for production changes by agents. A pre_tool_call guard blocks
   production-write tool calls (kubectl apply, helm upgrade, tofu apply, git push,

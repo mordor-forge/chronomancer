@@ -27,3 +27,18 @@ def test_readme_discloses_persisted_window_identities():
     assert 'proposing profile name' in disclosure
     assert '`telegram:<id>`' in disclosure
     assert 'decision snapshot' in disclosure
+
+
+def test_release_version_is_consistent_and_readme_has_the_install_line():
+    import re
+
+    import change_windows
+    manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text())
+    version = str(manifest["version"])
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), "a release version, not a dev marker"
+    assert change_windows.__version__ == version
+    readme = (ROOT / "README.md").read_text()
+    assert f"({version})" in readme.split("## Why")[0] and "dev0" not in readme
+    assert "hermes plugins install Gdetrane/hermes-change-windows" in readme
+    assert "hermes plugins enable change-windows" in readme
+    assert "waived" in readme.split("## Why")[0]  # the phone check is stated as not passed

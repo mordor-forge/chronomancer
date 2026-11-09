@@ -2,9 +2,10 @@
 
 Approved time windows for production changes made by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-> Status: **in development** (0.1.0-dev0). The guard, the four agent tools and the Telegram
-> buttons, card release, start/end notices and Mini App are implemented. Local tests include real
-> HTTP requests and a phone-sized Chromium flow. The real Telegram phone/HTTPS check was waived
+> Status: **first release** (0.1.0). The guard, the four agent tools and the Telegram buttons,
+> card release, start/end notices and Mini App are implemented. `hermes plugins doctor` and
+> `validate` pass on Hermes v0.23.0. Local tests include real HTTP requests and a phone-sized
+> Chromium flow. The real Telegram phone/HTTPS check was waived
 > by the owner, not passed; browser tests use synthetic Telegram signatures. Real phone, HTTPS
 > routing and Telegram-signed initData remain unverified.
 
@@ -15,6 +16,31 @@ prompt or a skill is advice the model can forget. `change-windows` enforces the 
 `pre_tool_call` hook: a production write runs only inside a window the owner approved for its
 scope. Outside a window the call is blocked, and the model is told which window comes next and
 how to ask for one.
+
+## Install
+
+Run these yourself in a terminal (the plugin's `self-protect` rule stops an agent from installing,
+updating or disabling it):
+
+```bash
+hermes plugins install Gdetrane/hermes-change-windows
+hermes plugins enable change-windows
+```
+
+Then set who may approve, in `config.yaml` of every profile that can reach production, and restart
+the gateway:
+
+```yaml
+plugins:
+  entries:
+    change-windows:
+      settings:
+        approver_telegram_ids: [123456789]   # your Telegram user id; empty = nobody can approve
+        timezone: Europe/Prague
+```
+
+Needs Hermes 0.22.7 or later. The guard and the agent tools work at once; approvals need the
+gateway connected to Telegram (see [Limits](#limits-read-before-you-rely-on-it)).
 
 ## How it works
 
@@ -209,7 +235,8 @@ line.
   scope, window, session/task ids and the argument size or names, not the values. With
   `audit_command_preview: true` it also stores a masked command preview (commands longer than 2000
   characters are omitted); masking is best effort, so a secret can remain. Turning the setting off
-  does not clean old rows: `Store.purge_previews()` can blank stored previews. The gateway scheduler
+  does not clean old rows: `Store.purge_previews()` (from Python; there is no command for it yet)
+  can blank stored previews. The gateway scheduler
   prunes audit rows older than 90 days at startup and daily (no pruning while the gateway is off);
   remember that SQLite and backups can keep old pages. Treat the database as sensitive.
 - **Network:** messages to the configured owner chat, and answers to button presses and
