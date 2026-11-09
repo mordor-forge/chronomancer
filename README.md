@@ -34,7 +34,7 @@ how to ask for one.
 4. **The guard** checks every tool call against the rules. An unmatched call costs a few regular
    expression checks and never touches the store. A matched call needs an open window for every
    scope it touches; otherwise it is blocked. If the store fails, a matched call is blocked
-   (fail closed). Matched calls are audited on a best-effort basis: tool, rule ids, scope, window
+   (fail closed; in `warn` mode it is allowed and not recorded). Matched calls are audited on a best-effort basis: tool, rule ids, scope, window
    and size; command text only if you opt in.
    If rules cannot be loaded or matched, calls are blocked because their match is unknown;
    the four window tools remain available to inspect, propose or remove permission.
@@ -172,10 +172,11 @@ line.
   that can reach production.
 - **Not an identity boundary.** Code that runs as your OS user can edit Hermes's config or the
   plugin's database. The `self-protect` rule blocks the obvious agent attempts (the plugin's data
-  path, `hermes change-windows <subcommand>` except `list`/`show`/`status`/`help`,
+  path, its installed code under `.hermes/**/plugins/change-windows`, `hermes change-windows <subcommand>` except `list`/`show`/`status`/`help`,
   `hermes plugins disable|remove|... change-windows`, edits of a config under `.hermes/` that name
   `change-windows`), also in warn mode, but it is a regex too. A config edit that sets `mode: off`
-  without naming the plugin is not caught. Approval is only through Telegram from an allow-listed
+  without naming the plugin is not caught, nor is a relative path that leaves out those
+  directory names, nor a Hermes home that is not called `.hermes`. Approval is only through Telegram from an allow-listed
   user id, never through a CLI an agent could drive.
 - **Conservative on purpose.** Every `git push` needs a window (refspecs, upstreams and wildcards
   are not parsed); disable `git-push` and add a narrower rule if your agent pushes feature branches.

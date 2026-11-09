@@ -291,3 +291,24 @@ def test_added_write_forms_do_not_match_read_only_commands(cmd):
 def test_api_merge_needs_put_and_the_merge_path_in_one_command():
     assert ids("terminal", command="gh api -X PUT repos/acme/web/pulls/42/update-branch; "
                                    "gh api repos/acme/web/pulls/42/merge") == []
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("patch", {"path": "/home/u/.hermes/plugins/change-windows/change_windows/guard.py",
+               "old_string": "return decision.hook_result()", "new_string": "return None"}),
+    ("write_file", {"path": "/home/u/.hermes/profiles/ops/plugins/change-windows/__init__.py", "content": "x"}),
+    ("write_file", {"path": "/home/u/.hermes/plugins/hermes-change-windows/plugin.yaml", "content": "x"}),
+    ("terminal", {"command": "rm -rf ~/.hermes/plugins/change-windows"}),
+    ("terminal", {"command": "sed -i s/block/allow/ ~/.hermes/plugins/'change-windows'/change_windows/guard.py"}),
+    ("execute_code", {"code": "open('/home/u/.hermes/plugins/change-windows/change_windows/rules.py','w').write('')"}),
+])
+def test_self_protect_covers_the_installed_plugin_code(tool, args):
+    assert "self-protect" in ids(tool, **args)
+
+
+def test_self_protect_leaves_other_plugins_and_checkouts_alone():
+    assert ids("terminal", command="ls ~/.hermes/plugins/") == []
+    assert ids("write_file", path="/home/u/.hermes/plugins/other-plugin/__init__.py", content="x") == []
+    assert ids("patch", path="/home/u/work/hermes-change-windows/change_windows/guard.py",
+               old_string="a", new_string="b") == []
+    assert ids("write_file", path="/home/u/work/plugins/change-windows/notes.md", content="x") == []
