@@ -20,11 +20,10 @@ def test_shipped_default_mode_is_enforce():
     assert manifest["config_schema"]["mode"]["default"] == "enforce"
     init_src = (ROOT / "__init__.py").read_text()
     assert 'setting("mode", "enforce")' in init_src
+
+
 def test_readme_discloses_persisted_window_identities():
-    from pathlib import Path
-    disclosure = (Path(__file__).resolve().parents[1] / 'README.md').read_text().split('## Disclosure')[1]
+    disclosure = (ROOT / 'README.md').read_text().split('## Disclosure')[1].split('\n## ')[0]
     assert 'proposing profile name' in disclosure
     assert '`telegram:<id>`' in disclosure
     assert 'decision snapshot' in disclosure
-
-

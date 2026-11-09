@@ -33,6 +33,8 @@ how to ask for one.
    scope it touches; otherwise it is blocked. If the store fails, a matched call is blocked
    (fail closed). Matched calls are audited on a best-effort basis: tool, rule ids, scope, window
    and size; command text only if you opt in.
+   If rules cannot be loaded or matched, calls are blocked because their match is unknown;
+   the four window tools remain available to inspect, propose or remove permission.
 
 ## Agent tools
 
@@ -63,7 +65,8 @@ gateway's bot. It needs no bot token of its own.
   Undeliverable failure reports retry after 10 seconds, doubling up to one hour, and log at
   WARNING on every failed delivery (including at the cap). This report backoff is per process
   and resets on restart; successful delivery finishes the effect.
-- **`/windows`.** Today's and tomorrow's windows, with overlaps. With a Mini App URL configured,
+- **`/windows`.** Today's and tomorrow's windows, with overlaps, in private chats only. In a
+  group, approvers receive only an instruction to use a private chat. With a Mini App URL configured,
   proposal messages and `/windows` include **Open list** in private chats. No bot menu, commands
   list or webhook is changed by the plugin.
 - **Who can act.** Only the Telegram user ids in `approver_telegram_ids`. Empty means nobody. Other
