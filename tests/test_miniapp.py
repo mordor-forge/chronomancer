@@ -167,6 +167,28 @@ def test_audit_excludes_previews_and_returns_only_last_twenty(h):
     asyncio.run(main())
 
 
+def test_window_responses_expose_only_display_fields(h, monkeypatch):
+    from change_windows.store import Window
+    original = Window.to_dict
+    monkeypatch.setattr(Window, 'to_dict', lambda w: {**original(w), 'future_private_field': 'private'})
+    fields = {'id', 'name', 'scope', 'start_ts', 'end_ts', 'exclusive', 'presence',
+              'state', 'kind', 'reason', 'cards', 'checked_in_at', 'closed_at'}
+
+    async def main():
+        w = h.propose()
+        async with TestClient(TestServer(h.app())) as client:
+            for _ in range(2):  # both the original decision and its persistent replay
+                response = await client.post(f'/api/windows/{w.id}/approve', headers=h.headers())
+                assert response.status == 200
+                assert set((await response.json())['window']) == fields
+            detail = await client.get(f'/api/windows/{w.id}', headers=h.headers())
+            listing = await client.get('/api/windows', headers=h.headers())
+            for row in ((await detail.json())['window'], (await listing.json())['windows'][0]):
+                assert set(row) == fields | {'open', 'span', 'overlaps'}
+                assert row['state'] == 'approved'
+    asyncio.run(main())
+
+
 def test_rate_limit_and_static_shell(h):
     async def main():
         w = h.propose()

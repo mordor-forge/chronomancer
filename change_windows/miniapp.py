@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 READ_AGE_S, WRITE_AGE_S = 3600, 600
 READ_LIMIT, WRITE_LIMIT = 120, 30  # per approver per minute, per process
 _KEY = re.compile(r"[A-Za-z0-9_-]{16,128}")
+_WINDOW_FIELDS = ("id", "name", "scope", "start_ts", "end_ts", "exclusive", "presence",
+                  "state", "kind", "reason", "cards", "checked_in_at", "closed_at")
 
 
 def public_url(setting: Callable[..., Any]) -> str | None:
@@ -38,7 +40,7 @@ def public_url(setting: Callable[..., Any]) -> str | None:
 
 
 def window_view(actions: Any, window: Any, now: int) -> dict[str, Any]:
-    data = window.to_dict()
+    data = {k: getattr(window, k) for k in _WINDOW_FIELDS}
     data["open"] = window.is_open(now)
     data["span"] = actions.span(window)
     data["overlaps"] = [w.id for w in actions._overlaps(window)] if (
@@ -131,7 +133,7 @@ def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable
         except StoreError as exc:
             raise web.HTTPConflict(text=str(exc))
         wake()
-        return web.json_response({"window": result})
+        return web.json_response({"window": {k: result[k] for k in _WINDOW_FIELDS}})
 
     app = web.Application(middlewares=[policy], client_max_size=16384)
     app.router.add_get("/", page)
