@@ -41,7 +41,7 @@ how to ask for one.
 
 | Tool | What it does |
 |---|---|
-| `window_propose` | Propose a window (pending until the owner approves). Links Kanban cards to release at start. |
+| `window_propose` | Propose a window (pending until the owner approves). Links Kanban cards to release at start. The name is kept on one line. At most 10 proposals can wait for a decision at a time (all scopes); further ones are refused until one is decided, withdrawn or past its end. |
 | `window_list` | Windows in the next N days. |
 | `window_next` | Is a window open now for a scope? If not, the next one and pending proposals. |
 | `window_close` | Close an open window early, or withdraw a pending proposal. |

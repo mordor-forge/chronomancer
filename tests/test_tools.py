@@ -63,3 +63,34 @@ def test_agent_cannot_propose_a_window_that_needs_a_check_in(store):
     assert w["presence_required"] is False
     store.decide(w["id"], approve=True, by="telegram:1", now=NOW)
     assert [o.id for o in store.open_windows("k8s-prod", NOW + 120)] == [w["id"]]
+
+
+def test_window_name_is_stored_on_one_line(store):
+    # The name is the header line of the owner's message: it must not add lines that look like
+    # the plugin's own (scope, time).
+    t = make(store)
+    w = call(t.propose, name="web v2\nW000000 · scope harmless\r\n Mon 01 Jan 00:00  ", scope="k8s-prod",
+             start=iso(NOW + 60), duration_minutes=30, reason="r")["window"]
+    assert w["name"] == "web v2 W000000 · scope harmless Mon 01 Jan 00:00"
+    blank = call(t.propose, name=" \n\t ", scope="k8s-prod", start=iso(NOW + 7200), duration_minutes=30, reason="r")
+    assert blank["window"]["name"] == "k8s-prod"
+
+
+def test_pending_proposals_are_capped(store):
+    from change_windows.tools import MAX_PENDING
+    t = make(store)
+    made = [call(t.propose, name=f"n{i}", scope=f"scope-{i % 3}", start=iso(NOW + 3600 * (i + 1)),
+                 duration_minutes=30, reason="r") for i in range(MAX_PENDING)]
+    assert all(m["ok"] for m in made)
+    over = call(t.propose, name="one more", scope="k8s-prod", start=iso(NOW + 60), duration_minutes=30, reason="r")
+    assert not over["ok"] and "window_close" in over["error"] and str(MAX_PENDING) in over["error"]
+    assert len(store.list_windows(0, NOW * 2, states=("pending",))) == MAX_PENDING
+    # A decided or withdrawn proposal frees a slot; so does one whose time has passed.
+    store.decide(made[0]["window"]["id"], approve=True, by="telegram:1", now=NOW)
+    assert call(t.propose, name="a", scope="k8s-prod", start=iso(NOW + 60), duration_minutes=30, reason="r")["ok"]
+    assert call(t.close, id=made[1]["window"]["id"], reason="not needed")["ok"]
+    assert call(t.propose, name="b", scope="infra", start=iso(NOW + 60), duration_minutes=30, reason="r")["ok"]
+    assert not call(t.propose, name="c", scope="infra", start=iso(NOW + 60), duration_minutes=30, reason="r")["ok"]
+    later = Tools(store, settings=lambda k, d=None: d, tz=lambda: None, actor=lambda: "agent:test",
+                  clock=lambda: NOW + 3600 * 24)
+    assert call(later.propose, name="d", scope="infra", start=iso(NOW + 3600 * 25), duration_minutes=30, reason="r")["ok"]

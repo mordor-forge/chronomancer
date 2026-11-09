@@ -17,6 +17,10 @@ from .store import Store, StoreError, Window
 
 _SCOPE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _TASK_RE = re.compile(r"^t_[0-9a-f]{6,32}$")
+# Proposals waiting for the owner, over all scopes. Each proposal is one Telegram message, so a
+# model that keeps proposing after a block must not be able to flood the owner's chat.
+MAX_PENDING = 10
+_NO_END = 2 ** 62  # an end bound later than any window
 
 PROPOSE = {
     "name": "window_propose",
@@ -141,8 +145,15 @@ class Tools:
             reason = str(args.get("reason") or "").strip()
             if not reason:
                 return _err("reason is required; the owner reads it before approving")
+            # One line: the name heads the owner's message and must not add lines of its own.
+            name = " ".join(str(args.get("name") or "").split())[:120] or scope
+            pending = self.store.list_windows(now, _NO_END, states=("pending",))
+            if len(pending) >= MAX_PENDING:
+                return _err(f"{MAX_PENDING} proposals are already waiting for the owner "
+                            f"({', '.join(w.id for w in pending[:MAX_PENDING])}). Do not propose more: wait for a "
+                            "decision, or withdraw one you no longer need with window_close.")
             window, conflicts = self.store.propose(
-                name=str(args.get("name") or scope)[:120], scope=scope, start_ts=start, end_ts=end,
+                name=name, scope=scope, start_ts=start, end_ts=end,
                 reason=reason[:2000], proposed_by=self.actor(), now=now,
                 exclusive=bool(args.get("exclusive", True)), cards=cards)  # no presence: no check-in surface yet
             if self.on_proposed is not None:
