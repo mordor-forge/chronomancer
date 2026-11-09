@@ -400,8 +400,11 @@ class Runtime:
             return
         if not await asyncio.to_thread(self.actions.is_approver, user.id):
             return  # say nothing to people who are not approvers
+        if message.chat.type != "private":
+            await message.reply_text("Use /windows in a private chat with me.")
+            return
         await message.reply_text(await asyncio.to_thread(self.actions.windows_text), reply_markup=_markup(
-            [], self.miniapp_url(message.chat.id if message.chat.type == "private" else None)))
+            [], self.miniapp_url(message.chat.id)))
 
 
 # -- one runtime per profile in this process ----------------------------------------------------------

@@ -262,6 +262,25 @@ def test_windows_command_answers_approvers_only(store):
     assert f"{w.id} pending" in sent[0]["text"]
 
 
+@pytest.mark.parametrize('chat_type', ['group', 'supergroup'])
+def test_windows_command_does_not_disclose_calendar_in_groups(store, chat_type):
+    async def main():
+        app, api = build_app()
+        tg.Runtime(make_actions(store)).bind(app)
+        await app.initialize()
+        w = propose(store)
+        update = command_update(app, OWNER).to_dict()
+        update['message']['chat'] = {'id': -100123, 'type': chat_type, 'title': 'Synthetic'}
+        await app.process_update(Update.de_json(update, app.bot))
+        await app.shutdown()
+        sent = api.named('sendMessage')
+        assert len(sent) == 1
+        assert sent[0]['text'] == 'Use /windows in a private chat with me.'
+        assert w.id not in sent[0]['text'] and w.name not in sent[0]['text']
+        assert sent[0].get('reply_markup') is None
+    asyncio.run(main())
+
+
 # -- scheduler: proposal messages ------------------------------------------------------------------------
 
 def test_scheduler_announces_a_proposal_once_and_only_when_running(store):
