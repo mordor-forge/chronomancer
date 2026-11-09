@@ -395,7 +395,12 @@ class Runtime:
         if query is None:
             return
         user_id = query.from_user.id if query.from_user else None
-        reply = await asyncio.to_thread(self.actions.on_button, user_id, query.data)
+        try:
+            reply = await asyncio.to_thread(self.actions.on_button, user_id, query.data)
+        except Exception as exc:
+            logger.warning("change-windows: callback failed (%s)", type(exc).__name__)
+            await query.answer("The window store is unavailable; retry.", show_alert=True)
+            return
         if not reply.alert:
             self.wake()  # an approval may make a start effect due now (late approval)
         await query.answer(reply.toast[:200], show_alert=reply.alert)

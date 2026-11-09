@@ -236,6 +236,30 @@ def test_a_failed_edit_does_not_undo_the_decision(store):
     assert store.get(asyncio.run(main()).id).state == "approved"
 
 
+def test_store_failure_answers_the_callback_with_an_alert(store, caplog):
+    from change_windows.store import Store
+
+    def unavailable():
+        raise sqlite3.OperationalError('synthetic private connection details')
+
+    async def main():
+        app, api = build_app()
+        tg.Runtime(make_actions(Store(unavailable))).bind(app)
+        w = propose(store)
+        await app.initialize()
+        with caplog.at_level(logging.WARNING):
+            await app.process_update(button_update(app, OWNER, f'cw:approve:{w.id}'))
+        await app.shutdown()
+        [answer] = api.named('answerCallbackQuery')
+        assert answer['show_alert'] is True
+        assert answer['text'] == 'The window store is unavailable; retry.'
+        assert api.named('editMessageText') == []
+        assert store.get(w.id).state == 'pending'
+        assert 'callback failed (OperationalError)' in caplog.text
+        assert 'synthetic private connection details' not in caplog.text
+    asyncio.run(main())
+
+
 def test_core_buttons_are_not_ours(store):
     handler = CallbackQueryHandler(lambda *_: None, pattern=tg.CALLBACK_PATTERN)
     app, _ = build_app()
