@@ -59,6 +59,7 @@ function node(tag, text, cls) {
   if (cls) el.className = cls;
   return el;
 }
+const CHANNELS = {telegram: 'Telegram', miniapp: 'the Mini App', desktop: 'Hermes Desktop'};
 function overlaps(w, parent) {
   if (w.overlaps.length) parent.append(node('span', 'overlaps ' + w.overlaps.join(', '), 'badge'));
 }
@@ -66,7 +67,7 @@ function show(w) {
   current = w;
   $('detail-state').textContent = w.open ? 'open now' : w.state;
   $('detail-name').textContent = w.name;
-  $('detail-meta').textContent = `${w.id} · ${w.scope}\n${w.span}\n${w.exclusive ? 'Exclusive' : 'Shared'}${w.cards.length ? '\nCards: ' + w.cards.map(c => c.task_id).join(', ') : ''}`;
+  $('detail-meta').textContent = `${w.id} · ${w.scope}\n${w.span}\n${w.exclusive ? 'Exclusive' : 'Shared'}${w.cards.length ? '\nCards: ' + w.cards.map(c => c.task_id).join(', ') : ''}${CHANNELS[w.decided_via] ? '\nDecided in ' + CHANNELS[w.decided_via] : ''}`;
   $('detail-reason').textContent = w.reason;
   $('detail-overlaps').replaceChildren(); overlaps(w, $('detail-overlaps'));
   for (const action of ['approve', 'decline', 'close']) {

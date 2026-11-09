@@ -12,20 +12,17 @@ import ipaddress
 import logging
 import re
 from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from .initdata import InitDataError, verify_ed25519
 from .store import StoreError
+from .views import IDEMPOTENCY_KEY, audit_view, list_view, snapshot_view, window_view
 
 logger = logging.getLogger(__name__)
 READ_AGE_S, WRITE_AGE_S = 3600, 600
 READ_LIMIT, WRITE_LIMIT = 120, 30  # per approver per minute, per process
-_KEY = re.compile(r"[A-Za-z0-9_-]{16,128}")
-_WINDOW_FIELDS = ("id", "name", "scope", "start_ts", "end_ts", "exclusive", "presence",
-                  "state", "kind", "reason", "cards", "checked_in_at", "closed_at")
 
 
 def public_url(setting: Callable[..., Any]) -> str | None:
@@ -39,15 +36,6 @@ def public_url(setting: Callable[..., Any]) -> str | None:
     except ValueError:
         pass
     return None
-
-
-def window_view(actions: Any, window: Any, now: int) -> dict[str, Any]:
-    data = {k: getattr(window, k) for k in _WINDOW_FIELDS}
-    data["open"] = window.is_open(now)
-    data["span"] = actions.span(window)
-    data["overlaps"] = [w.id for w in actions._overlaps(window)] if (
-        window.state in ("pending", "approved") and window.closed_at is None) else []
-    return data
 
 
 def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable[[], None] = lambda: None,
@@ -107,17 +95,8 @@ def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable
     async def page(request: Any) -> Any:
         return web.Response(text=html, content_type="text/html", headers={"Content-Security-Policy": csp})
 
-    def list_data() -> dict[str, Any]:
-        now = int(actions.clock())
-        today = datetime.fromtimestamp(now, actions.tz() or timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0)
-        start, end = int(today.timestamp()), int((today + timedelta(days=8)).timestamp())
-        rows = actions.store.list_windows(start, end, states=("pending", "approved", "closed", "declined", "cancelled"))
-        return {"now": now, "start": start, "end": end,
-                "windows": [window_view(actions, w, now) for w in rows]}
-
     async def windows(request: Any) -> Any:
-        return web.json_response(await asyncio.to_thread(list_data))
+        return web.json_response(await asyncio.to_thread(list_view, actions))
 
     async def detail(request: Any) -> Any:
         def read() -> Any:
@@ -129,14 +108,11 @@ def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable
         return web.json_response({"window": result})
 
     async def audit(request: Any) -> Any:
-        rows = await asyncio.to_thread(actions.store.audit_tail, 20)
-        # Explicit selection: even historic or opted-in command previews never reach this surface.
-        fields = ("id", "ts", "verdict", "tool", "rule_ids", "scopes", "window_id")
-        return web.json_response({"audit": [{k: row[k] for k in fields} for row in rows]})
+        return web.json_response({"audit": await asyncio.to_thread(audit_view, actions.store)})
 
     async def action(request: Any) -> Any:
         key = request.headers.get("Idempotency-Key", "")
-        if not _KEY.fullmatch(key):
+        if not IDEMPOTENCY_KEY.fullmatch(key):
             raise web.HTTPBadRequest(text="Idempotency-Key must be 16-128 letters, digits, underscores or hyphens.")
         try:
             result = await asyncio.to_thread(actions.store.api_action, request[user_key], key,
@@ -145,7 +121,7 @@ def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable
         except StoreError as exc:
             raise web.HTTPConflict(text=str(exc))
         wake()
-        return web.json_response({"window": {k: result[k] for k in _WINDOW_FIELDS}})
+        return web.json_response({"window": snapshot_view(result)})
 
     app = web.Application(middlewares=[policy], client_max_size=16384)
     app.router.add_get("/", page)

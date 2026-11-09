@@ -172,7 +172,7 @@ def test_window_responses_expose_only_display_fields(h, monkeypatch):
     original = Window.to_dict
     monkeypatch.setattr(Window, 'to_dict', lambda w: {**original(w), 'future_private_field': 'private'})
     fields = {'id', 'name', 'scope', 'start_ts', 'end_ts', 'exclusive', 'presence',
-              'state', 'kind', 'reason', 'cards', 'checked_in_at', 'closed_at'}
+              'state', 'kind', 'reason', 'cards', 'checked_in_at', 'closed_at', 'decided_via'}
 
     async def main():
         w = h.propose()
