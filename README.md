@@ -59,6 +59,9 @@ gateway's bot. It needs no bot token of its own.
 - **Window ends.** At the end: "Window ended", unless it was closed early. A start that the gateway
   missed completely (it was down for the whole window) is reported as missed; its cards stay as they
   were. An effect that fails 3 times (2 minutes apart) is reported to the owner chat.
+  Undeliverable failure reports retry after 10 seconds, doubling up to one hour, and log at
+  WARNING on every failed delivery (including at the cap). This report backoff is per process
+  and resets on restart; successful delivery finishes the effect.
 - **`/windows`.** Today's and tomorrow's windows, with overlaps. With a Mini App URL configured,
   proposal messages and `/windows` include **Open list** in private chats. No bot menu, commands
   list or webhook is changed by the plugin.

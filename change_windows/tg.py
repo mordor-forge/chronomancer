@@ -43,6 +43,8 @@ _CALLBACK_RE = re.compile(r"cw:(approve|decline|close):(W[0-9A-F]{6})")  # used 
 ANNOUNCE = fx.ANNOUNCE
 ANNOUNCE_LEASE_S = fx.LEASE_S
 SCHEDULER_INTERVAL_S = 10.0
+REPORT_RETRY_S = 10
+REPORT_RETRY_CAP_S = 3600
 _MAX_TEXT = 3500  # Telegram's limit is 4096; keep room for the header
 
 
@@ -228,6 +230,7 @@ class Runtime:
         self._warned_no_chat = False
         self._active = False  # the last pass could run effects (application running, owner chat set)
         self._prune_at = 0
+        self._report_retries: dict[tuple[str, str], tuple[int, int]] = {}
         self.binds = 0
 
     # -- factory side ----------------------------------------------------------------------------
@@ -363,6 +366,10 @@ class Runtime:
         failed = await asyncio.to_thread(store.failed_effects, now, lease_s=fx.LEASE_S, max_attempts=fx.MAX_ATTEMPTS)
         sent = 0
         for window_id, kind, attempts in failed:
+            key = (window_id, kind)
+            retry_at, previous_delay = self._report_retries.get(key, (0, 0))
+            if now < retry_at:
+                continue
             try:
                 last = await asyncio.to_thread(store.effect_result, window_id, kind)
                 await self.app.bot.send_message(chat_id=chat, text=fx.Effects.failure_message(
@@ -370,11 +377,16 @@ class Runtime:
                 await asyncio.to_thread(store.finish_effect, window_id, kind,
                                         f"failed after {attempts} attempts; reported. {last or ''}".strip(),
                                         now=int(self.clock()))
+                self._report_retries.pop(key, None)
                 sent += 1
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # tried again on the next pass
-                logger.debug("change-windows: could not report a failed effect: %s", type(exc).__name__)
+            except Exception as exc:
+                delay = min(REPORT_RETRY_CAP_S, previous_delay * 2 or REPORT_RETRY_S)
+                self._report_retries[key] = (int(self.clock()) + delay, delay)
+                logger.warning("change-windows: could not report failed %s effect for %s (%s); retry in %s s%s",
+                               kind, window_id, type(exc).__name__, delay,
+                               " (cap reached)" if delay == REPORT_RETRY_CAP_S else "")
         return sent
 
     # -- handlers --------------------------------------------------------------------------------

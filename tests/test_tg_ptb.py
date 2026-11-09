@@ -473,6 +473,45 @@ def test_an_effect_that_keeps_failing_is_reported_once(store, caplog):
     assert store.effect_result(w.id, "start").startswith("failed after 3 attempts; reported")
 
 
+def test_undeliverable_failure_reports_back_off_cap_warn_and_recover(store, caplog):
+    from change_windows import effects as fx
+    clock = {'now': NOW}
+    w = propose(store)
+    for _ in range(fx.MAX_ATTEMPTS):
+        assert store.claim_due_effects(clock['now'], kinds=('announce',), lease_s=fx.LEASE_S)
+        clock['now'] += fx.LEASE_S
+
+    async def main():
+        app, api = build_app()
+        api.fail.add('sendMessage')
+        runtime = tg.Runtime(make_actions(store, clock=lambda: clock['now']))
+        runtime.bind(app)
+        await app.initialize()
+        await app.start()
+        try:
+            with caplog.at_level(logging.WARNING):
+                assert await runtime.tick() == 0
+                for count, delay in enumerate((10, 20, 40, 80, 160, 320, 640, 1280, 2560, 3600, 3600), 1):
+                    assert len(api.named('sendMessage')) == count
+                    assert await runtime.tick() == 0
+                    clock['now'] += delay - 1
+                    assert await runtime.tick() == 0
+                    assert len(api.named('sendMessage')) == count
+                    clock['now'] += 1
+                    assert await runtime.tick() == 0
+                assert 'retry in 3600 s (cap reached)' in caplog.text
+                api.fail.clear()
+                clock['now'] += 3600
+                assert await runtime.tick() == 1
+                assert await runtime.tick() == 0
+                assert len(api.named('sendMessage')) == 13
+                assert store.effect_result(w.id, 'announce').startswith('failed after 3 attempts; reported')
+        finally:
+            await app.stop()
+            await app.shutdown()
+    asyncio.run(main())
+
+
 def test_a_late_approval_opens_the_window_at_once(store):
     async def main():
         app, api = build_app()
