@@ -116,7 +116,7 @@ capacity. A `triage` card cannot be released through any public surface, so it i
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mode` | `enforce` | `enforce` blocks; `warn` records and allows, except `self-protect` hits, which always block; `off` disables the guard. |
+| `mode` | `enforce` | `enforce` blocks; `warn` records and allows, except `self-protect` hits, which always block; `off` disables the guard (an unquoted YAML `off` is read as `false` and also counts as off). Any other value enforces. |
 | `timezone` | system zone | IANA zone for times without an offset. |
 | `rules` | `[]` | Extra rules: `{id, scope, tools: [fnmatch], match: regex, field: command\|code\|*}`. |
 | `disabled_rules` | `[]` | Default rule ids to turn off. `self-protect` cannot be turned off. |

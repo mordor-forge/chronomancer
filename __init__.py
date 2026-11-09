@@ -80,13 +80,16 @@ def register(ctx: Any) -> None:
         return ctx.get_config(key, default=default)
 
     def mode() -> str:
-        value = str(setting("mode", "enforce")).strip().lower()
+        raw = setting("mode", "enforce")
+        if raw is False:  # YAML 1.1 reads an unquoted ``mode: off`` as the boolean False
+            return "off"
+        value = str(raw).strip().lower()
         return value if value in guard.MODES else "enforce"  # an unknown value fails closed
 
     def tz() -> Any:
         return _local_tz(setting("timezone", None))
 
-    agent_tools = tools.Tools(store, settings=setting, tz=tz, actor=lambda: f"agent:{ctx.profile_name}",
+    agent_tools = tools.Tools(store, settings=setting, tz=tz, actor=lambda: f"agent:{getattr(ctx, 'profile_name', None) or 'default'}",
                               on_proposed=lambda _window, _conflicts: tg.wake_all())
     for schema, handler in (
         (tools.PROPOSE, agent_tools.propose),
