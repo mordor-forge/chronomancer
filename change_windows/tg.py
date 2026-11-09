@@ -69,6 +69,15 @@ def _ids(value: Any) -> list[int]:
     return out
 
 
+_CHANNEL_NAMES = {"telegram": "Telegram", "miniapp": "the Mini App", "desktop": "Hermes Desktop"}
+
+
+def decided_line(w: Window) -> str:
+    """``Decided by <who> in <channel>``. Rows decided before the channel was recorded have none."""
+    channel = _CHANNEL_NAMES.get(w.decided_via or "")
+    return f"Decided by {w.decided_by}" + (f" in {channel}" if channel else "")
+
+
 @dataclass
 class Reply:
     """What the bot does after a button press."""
@@ -135,7 +144,7 @@ class Actions:
             if overlaps:
                 lines.append("OVERLAPS: " + ", ".join(f"{o.id} ({o.state}, {o.name})" for o in overlaps))
         if w.decided_by and w.state != "pending":
-            lines.append(f"Decided by {w.decided_by}")
+            lines.append(decided_line(w))
         if w.close_reason:
             lines.append(f"Closed: {w.close_reason}")
         text = "\n".join(lines)
@@ -183,10 +192,10 @@ class Actions:
                 current = self.store.get(window_id)
                 if current is not None and current.state == "pending" and current.end_ts <= now:
                     raise StoreError(f"window {window_id} has already ended; ask for a new one")
-                window = self.store.decide(window_id, approve=True, by=by, now=now)
+                window = self.store.decide(window_id, approve=True, by=by, now=now, via="telegram")
                 toast = "Approved."
             elif action == "decline":
-                window = self.store.decide(window_id, approve=False, by=by, now=now)
+                window = self.store.decide(window_id, approve=False, by=by, now=now, via="telegram")
                 toast = "Declined."
             else:
                 window = self.store.close(window_id, by=by, reason="closed from Telegram", now=now)

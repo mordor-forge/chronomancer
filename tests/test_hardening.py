@@ -194,4 +194,4 @@ def test_v2_database_adds_durable_actions_without_losing_windows(store,db_path):
     assert upgraded.get(w.id).state == 'pending'
     assert upgraded.api_action(42,'upgrade-key-0000001',w.id,'approve',NOW)['state'] == 'approved'
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("SELECT v FROM meta WHERE k='schema_version'").fetchone() == ('3',)
+        assert conn.execute("SELECT v FROM meta WHERE k='schema_version'").fetchone() == ('4',)

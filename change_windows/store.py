@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS windows (
     closed_at     INTEGER,
     close_reason  TEXT,
     created_at    INTEGER NOT NULL,
+    decided_via   TEXT,
     CHECK (end_ts > start_ts)
 );
 CREATE INDEX IF NOT EXISTS windows_scope_start ON windows (scope, start_ts);
@@ -76,6 +77,8 @@ CREATE TABLE IF NOT EXISTS effects (
 """
 
 LIVE_STATES = ("pending", "approved")
+CHANNELS = ("telegram", "miniapp", "desktop")  # where an owner decision was made
+_CLOSED_FROM = {"telegram": "closed from Telegram", "miniapp": "closed from Mini App", "desktop": "closed from Desktop"}
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,7 @@ class Window:
     closed_at: Optional[int]
     close_reason: Optional[str]
     created_at: int
+    decided_via: Optional[str] = None  # one of CHANNELS; None for rows decided before schema v4
 
     def is_open(self, now: int) -> bool:
         """Approved, inside its interval, not closed early, and checked in when presence is required."""
@@ -145,8 +149,9 @@ class Store:
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
-        """v1 -> v2: leased effects. Serialized with BEGIN IMMEDIATE, so two processes that open a v1
-        file at the same time cannot both add a column. Adds columns in place; never drops data."""
+        """v1 -> v2: leased effects. v3 -> v4: the decision channel. Serialized with BEGIN IMMEDIATE,
+        so two processes that open an old file at the same time cannot both add a column. Adds
+        columns in place; never drops data."""
         level = conn.isolation_level
         conn.isolation_level = None
         try:
@@ -157,6 +162,8 @@ class Store:
                     conn.execute("ALTER TABLE effects ADD COLUMN claimed_ts INTEGER")
                 if "attempts" not in cols:
                     conn.execute("ALTER TABLE effects ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+                if "decided_via" not in {row[1] for row in conn.execute("PRAGMA table_info(windows)")}:
+                    conn.execute("ALTER TABLE windows ADD COLUMN decided_via TEXT")
                 conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema_version', ?)",
                              (str(SCHEMA_VERSION),))
             except BaseException:
@@ -257,13 +264,17 @@ class Store:
         assert window is not None
         return window, conflicts
 
-    def decide(self, window_id: str, *, approve: bool, by: str, now: int) -> Window:
-        """Owner decision on a pending window. Approval re-checks overlaps in the same transaction."""
+    def decide(self, window_id: str, *, approve: bool, by: str, now: int, via: Optional[str] = None) -> Window:
+        """Owner decision on a pending window. Approval re-checks overlaps in the same transaction.
+        ``via`` is the channel the decision came through (one of ``CHANNELS``)."""
         with self._write() as conn:
-            self._decide(conn, window_id, approve=approve, by=by, now=now)
+            self._decide(conn, window_id, approve=approve, by=by, now=now, via=via)
             return self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))[0]
 
-    def _decide(self, conn: sqlite3.Connection, window_id: str, *, approve: bool, by: str, now: int) -> None:
+    def _decide(self, conn: sqlite3.Connection, window_id: str, *, approve: bool, by: str, now: int,
+                via: Optional[str] = None) -> None:
+        if via is not None and via not in CHANNELS:
+            raise StoreError("unknown decision channel")
         rows = self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))
         if not rows:
             raise StoreError(f"unknown window {window_id}")
@@ -279,8 +290,8 @@ class Store:
                 (window.scope, window.end_ts, window.start_ts, window.id)) if window.exclusive or w.exclusive]
             if clash:
                 raise StoreError(f"window {window_id} overlaps approved {', '.join(w.id for w in clash)}")
-        conn.execute("UPDATE windows SET state = ?, decided_by = ?, decided_at = ? WHERE id = ?",
-                     ("approved" if approve else "declined", by, now, window_id))
+        conn.execute("UPDATE windows SET state = ?, decided_by = ?, decided_at = ?, decided_via = ? WHERE id = ?",
+                     ("approved" if approve else "declined", by, now, via, window_id))
         if approve:
             # The gateway's scheduler opens the window (card release, notice) and reports its end.
             # Queued in the same transaction, so an approval never lacks its timed effects.
@@ -316,12 +327,18 @@ class Store:
         conn.execute("UPDATE windows SET state = ?, closed_at = ?, close_reason = ? WHERE id = ?",
                      (new_state, now, f"{by}: {reason}", window_id))
 
-    def api_action(self, user_id: int, request_key: str, window_id: str, action: str, now: int) -> dict[str, Any]:
+    def api_action(self, user_id: int, request_key: str, window_id: str, action: str, now: int, *,
+                   channel: str = "miniapp", by: Optional[str] = None) -> dict[str, Any]:
         """Commit the action and replay result together. Callers must authenticate/authorize first.
 
         Keys are scoped to an approver, survive restart, and cannot be reused for another action.
         A replay returns the original result; clients refresh the list to see subsequent changes.
+        ``channel`` is recorded with a decision. ``by`` defaults to the Telegram user; the Desktop
+        route has no Telegram user and passes its own actor with ``user_id`` 0 (no Telegram user
+        has id 0, so its keys cannot collide with an approver's).
         """
+        if channel not in CHANNELS:
+            raise StoreError("unknown decision channel")
         with self._write() as conn:
             row = conn.execute("SELECT window_id, action, response FROM api_actions "
                                "WHERE user_id = ? AND request_key = ?", (user_id, request_key)).fetchone()
@@ -329,17 +346,22 @@ class Store:
                 if row[:2] != (window_id, action):
                     raise StoreError("idempotency key already used for a different action")
                 return json.loads(row[2])
-            by = f"telegram:{user_id}"
+            by = by or f"telegram:{user_id}"
             if action in ("approve", "decline"):
-                self._decide(conn, window_id, approve=action == "approve", by=by, now=now)
+                self._decide(conn, window_id, approve=action == "approve", by=by, now=now, via=channel)
             elif action == "close":
-                self._close(conn, window_id, by=by, reason="closed from Mini App", now=now)
+                self._close(conn, window_id, by=by, reason=_CLOSED_FROM[channel], now=now)
             else:
                 raise StoreError("unknown action")
             result = self._rows(conn, "SELECT * FROM windows WHERE id = ?", (window_id,))[0].to_dict()
             conn.execute("INSERT INTO api_actions VALUES (?,?,?,?,?,?)",
                          (user_id, request_key, window_id, action, json.dumps(result), now))
             return result
+
+    def recent_decisions(self, limit: int = 20) -> list[Window]:
+        """Windows an owner approved or declined, newest decision first."""
+        return self._query("SELECT * FROM windows WHERE decided_at IS NOT NULL AND decided_by IS NOT NULL "
+                           "ORDER BY decided_at DESC, id LIMIT ?", (limit,))
 
     def record_audit(self, *, now: int, verdict: str, tool: str, rule_ids: list[str], scopes: list[str],
                      preview: str, window_id: Optional[str] = None, session_id: str = "", task_id: str = "") -> None:
