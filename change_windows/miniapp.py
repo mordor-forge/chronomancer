@@ -6,6 +6,8 @@ Telegram's Ed25519 initData and the current approver allow-list, including idemp
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import ipaddress
 import logging
 import re
@@ -53,6 +55,15 @@ def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable
     from aiohttp import web
 
     html = Path(__file__).with_name("miniapp.html").read_text()
+
+    def inline_hash(tag: str) -> str:
+        [body] = re.findall(f"<{tag}>(.*?)</{tag}>", html, re.S)
+        digest = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+        return f"'sha256-{digest}'"
+
+    csp = (f"default-src 'none'; script-src {inline_hash('script')} https://telegram.org/js/telegram-web-app.js; "
+           f"style-src {inline_hash('style')}; connect-src 'self'; img-src data:; "
+           "base-uri 'none'; form-action 'none'")
     user_key = getattr(web, "RequestKey", web.AppKey)("user_id", int)
     buckets: dict[tuple[int, bool], deque[float]] = defaultdict(deque)
 
@@ -94,7 +105,7 @@ def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable
         return response
 
     async def page(request: Any) -> Any:
-        return web.Response(text=html, content_type="text/html")
+        return web.Response(text=html, content_type="text/html", headers={"Content-Security-Policy": csp})
 
     def list_data() -> dict[str, Any]:
         now = int(actions.clock())

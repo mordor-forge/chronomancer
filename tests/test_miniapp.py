@@ -224,6 +224,30 @@ def test_static_shell_is_loaded_once_per_application(h, monkeypatch):
     asyncio.run(main())
 
 
+def test_page_csp_allows_only_bundled_code_and_the_telegram_sdk(h):
+    import base64
+    import hashlib
+    import re
+
+    async def main():
+        async with TestClient(TestServer(h.app())) as client:
+            response = await client.get('/')
+            html = await response.text()
+            policy = response.headers['Content-Security-Policy']
+            directives = {parts[0]: set(parts[1:]) for entry in policy.split(';')
+                          if (parts := entry.split())}
+            def digest(tag):
+                [body] = re.findall(f'<{tag}>(.*?)</{tag}>', html, re.S)
+                return "'sha256-" + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode() + "'"
+            assert directives['default-src'] == {"'none'"}
+            assert directives['script-src'] == {digest('script'), 'https://telegram.org/js/telegram-web-app.js'}
+            assert directives['style-src'] == {digest('style')}
+            assert directives['connect-src'] == {"'self'"}
+            assert directives['base-uri'] == directives['form-action'] == {"'none'"}
+            assert 'unsafe-inline' not in policy and 'unsafe-eval' not in policy
+    asyncio.run(main())
+
+
 def test_eight_local_calendar_days(h):
     from zoneinfo import ZoneInfo
     h.actions.tz = lambda: ZoneInfo('Europe/Prague')
