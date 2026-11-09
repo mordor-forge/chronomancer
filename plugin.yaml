@@ -30,7 +30,7 @@ config_schema:
     type: str
     default: ""
     label: Time zone
-    description: "IANA zone for parsing and showing times (empty = system zone), e.g. Europe/Prague."
+    description: "IANA zone for parsing and showing times, e.g. Europe/Prague. Empty = the system zone by name (TZ, then /etc/localtime)."
   rules:
     type: list
     default: []

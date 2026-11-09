@@ -118,7 +118,7 @@ capacity. A `triage` card cannot be released through any public surface, so it i
 | Key | Default | Meaning |
 |---|---|---|
 | `mode` | `enforce` | `enforce` blocks; `warn` records and allows, except `self-protect` hits, which always block; `off` disables the guard (an unquoted YAML `off` is read as `false` and also counts as off). Any other value enforces. |
-| `timezone` | system zone | IANA zone for times without an offset. |
+| `timezone` | system zone | IANA zone (for example `Europe/Prague`) for showing times and for times given without an offset; daylight-saving changes are applied per date. Empty: the system zone by name (`TZ`, then the `/etc/localtime` link). If no name is found, the plugin logs a warning and uses today's fixed offset, which is wrong across a daylight-saving change. |
 | `rules` | `[]` | Extra rules: `{id, scope, tools: [fnmatch], match: regex, field: command\|code\|*}`. |
 | `disabled_rules` | `[]` | Default rule ids to turn off. `self-protect` cannot be turned off. |
 | `approver_telegram_ids` | `[]` | Telegram user ids that may approve, decline and close windows and read `/windows`. Empty = nobody. |

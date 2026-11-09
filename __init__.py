@@ -18,27 +18,16 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
 from typing import Any
 
 from .change_windows import guard, rules, tg, tools
 from .change_windows.store import Store
+from .change_windows.timezones import local_tz
 
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "change-windows"
 TOOLSET = "change_windows"
-
-
-def _local_tz(name: str | None) -> Any:
-    if name:
-        try:
-            from zoneinfo import ZoneInfo
-
-            return ZoneInfo(name)
-        except Exception:
-            logger.warning("change-windows: unknown timezone %r; using the system zone", name)
-    return datetime.now().astimezone().tzinfo
 
 
 class _RuleCache:
@@ -87,7 +76,7 @@ def register(ctx: Any) -> None:
         return value if value in guard.MODES else "enforce"  # an unknown value fails closed
 
     def tz() -> Any:
-        return _local_tz(setting("timezone", None))
+        return local_tz(setting("timezone", None))
 
     agent_tools = tools.Tools(store, settings=setting, tz=tz, actor=lambda: f"agent:{getattr(ctx, 'profile_name', None) or 'default'}",
                               on_proposed=lambda _window, _conflicts: tg.wake_all())
