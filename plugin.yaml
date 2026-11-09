@@ -4,7 +4,8 @@ description: >-
   Approved time windows for production changes by agents. A pre_tool_call guard blocks
   production-write tool calls (kubectl apply, helm upgrade, tofu apply, git push,
   PR merges, configured MCP tools) unless an owner-approved window for their scope is open.
-  Agents propose windows; the owner approves, declines or closes them with Telegram buttons.
+  Agents propose windows; the owner approves, declines or closes them with Telegram buttons,
+  the Telegram Mini App or a Hermes Desktop page.
   Linked Kanban cards are released when a window opens.
 author: Giorgio De Trane
 license: MIT
@@ -46,6 +47,11 @@ config_schema:
     default: []
     label: Approvers (Telegram user ids)
     description: "Telegram user ids that may approve, decline and close windows and read /windows. Empty = nobody can approve."
+  approval.desktop:
+    type: bool
+    default: true
+    label: Allow approval in Hermes Desktop
+    description: "true: Approve and Decline also work on the Hermes Desktop page, which trusts the local Desktop session (no Telegram signature). false: only Telegram and the Mini App can approve; the Desktop page still shows windows and can close them. Any value other than true counts as false."
   owner_chat_id:
     type: int
     default: 0

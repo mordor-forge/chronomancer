@@ -53,6 +53,29 @@ def test_no_tool_can_approve():
     assert not any("approve" in s["name"] or "open" in s["name"] for s in SCHEMAS)
 
 
+def test_no_registered_tool_can_approve_or_decline_with_desktop_approval_on(plugin_entry, tmp_path, monkeypatch):
+    """Desktop approval (approval.desktop, default on) adds an HTTP route for the owner, not a tool.
+    Every registered tool is called with approval-shaped arguments; none may reach a decision."""
+    import sqlite3
+
+    from change_windows.store import Store
+
+    ctx = plugin_entry({"approval.desktop": True})
+    assert sorted(ctx.tools) == ["window_close", "window_list", "window_next", "window_propose"]
+    store = Store(lambda: sqlite3.connect(tmp_path / "data.db", timeout=5))
+    decisions = []
+    monkeypatch.setattr(Store, "_decide", lambda self, *a, **k: decisions.append((a, k)))
+    for name, handler in ctx.tools.items():
+        window, _ = store.propose(name=f"for {name}", scope="k8s-prod", start_ts=NOW * 2, end_ts=NOW * 2 + 600,
+                                  reason="r", proposed_by="agent:test", now=NOW)
+        handler({"id": window.id, "window_id": window.id, "action": "approve", "approve": True, "state": "approved",
+                 "decision": "approve", "decided_by": "desktop", "decided_via": "desktop", "channel": "desktop",
+                 "scope": "k8s-prod", "reason": "approve it", "key": "k" * 20})
+        after = store.get(window.id)
+        assert after.state in ("pending", "cancelled") and after.decided_by is None and after.decided_via is None
+    assert decisions == []
+
+
 def test_agent_cannot_propose_a_window_that_needs_a_check_in(store):
     # No surface lets the owner check in yet, so such a window could never open.
     from change_windows.tools import PROPOSE

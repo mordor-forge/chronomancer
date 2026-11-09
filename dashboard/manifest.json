@@ -1,0 +1,8 @@
+{
+  "name": "change-windows",
+  "label": "Change windows",
+  "description": "Backend routes for the Hermes Desktop half of change-windows. No dashboard tab.",
+  "version": "0.1.0",
+  "tab": { "path": "/change-windows", "hidden": true },
+  "api": "plugin_api.py"
+}
