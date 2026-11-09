@@ -189,6 +189,15 @@ def compile_rule(raw: dict[str, Any]) -> Rule:
         tools = [tools]
     if not rule_id or not scope or not tools:
         raise RuleError(f"rule needs id, scope and tools: {raw!r}")
+    # A wrongly typed value (match: 123, tools: 5) must be a skipped rule, never an exception
+    # that reaches the guard: there it would block every tool call.
+    if not isinstance(tools, (list, tuple)) or not all(isinstance(t, str) and t for t in tools):
+        raise RuleError(f"rule {rule_id}: tools must be a tool name pattern or a list of them")
+    for key in ("match", "unless"):
+        value = raw.get(key)
+        if value is not None and value != "" and not isinstance(value, str):
+            raise RuleError(f"rule {rule_id}: {key} must be a regular expression string, "
+                            f"got {type(value).__name__}")
     try:
         pattern = re.compile(raw["match"]) if raw.get("match") else None
         unless = re.compile(raw["unless"]) if raw.get("unless") else None
@@ -197,7 +206,7 @@ def compile_rule(raw: dict[str, Any]) -> Rule:
     return Rule(
         id=rule_id,
         scope=scope,
-        tools=tuple(str(t) for t in tools),
+        tools=tuple(tools),
         pattern=pattern,
         field=str(raw.get("field") or "command"),
         description=str(raw.get("description") or ""),

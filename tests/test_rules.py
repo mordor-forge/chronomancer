@@ -166,3 +166,19 @@ def test_code_git_is_linear_on_many_git_tokens():
     start = _t.monotonic()
     assert ids("execute_code", code="# " + "git " * 50_000) == []
     assert _t.monotonic() - start < 0.5
+
+
+@pytest.mark.parametrize("raw", [
+    {"id": "b", "scope": "s", "tools": ["terminal"], "match": 123},
+    {"id": "b", "scope": "s", "tools": ["terminal"], "match": ["kubectl", "apply"]},
+    {"id": "b", "scope": "s", "tools": ["terminal"], "match": True},
+    {"id": "b", "scope": "s", "tools": ["terminal"], "match": "x", "unless": 5},
+    {"id": "b", "scope": "s", "tools": 5},
+    {"id": "b", "scope": "s", "tools": ["terminal", 7]},
+    {"id": "b", "scope": "s", "tools": {"terminal": True}},
+])
+def test_wrongly_typed_extra_rule_is_skipped_and_defaults_stay(raw):
+    rs = build_ruleset([raw])
+    assert len(rs.errors) == 1 and "b" not in [r.id for r in rs.rules]
+    assert rs.match("terminal", {"command": "kubectl apply -f x"})
+    assert not rs.match("terminal", {"command": "ls -la"})
