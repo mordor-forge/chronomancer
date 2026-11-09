@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS api_actions (
     created_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, request_key)
 );
+CREATE INDEX IF NOT EXISTS api_actions_created_at ON api_actions (created_at);
 CREATE TABLE IF NOT EXISTS audit (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     ts         INTEGER NOT NULL,
@@ -377,6 +378,11 @@ class Store:
         """Remove rows older than the retention boundary; never include previews in a response."""
         with self._write() as conn:
             return conn.execute("DELETE FROM audit WHERE ts < ?", (before_ts,)).rowcount
+
+    def prune_api_actions(self, before_ts: int) -> int:
+        """Expire idempotency keys and their decision snapshots at the retention boundary."""
+        with self._write() as conn:
+            return conn.execute("DELETE FROM api_actions WHERE created_at < ?", (before_ts,)).rowcount
 
     # -- timed effects (announce on proposal; start and end on approval; reminders are a stretch) ---
     def ensure_effects(self, window: Window, *, reminder_s: int) -> None:

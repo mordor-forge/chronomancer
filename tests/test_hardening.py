@@ -161,6 +161,30 @@ def test_audit_retention_runs_without_telegram_connection(store):
     assert [r['ts'] for r in store.audit_tail()] == [NOW,keep]
 
 
+def test_api_action_retention_at_startup_and_daily_without_telegram(store, db_path):
+    keep = NOW - 90 * 86400
+    h = Harness(store)
+    for i, ts in enumerate((keep - 1, keep, NOW)):
+        w = h.propose()
+        store.api_action(42, f'retention-key-{i:016d}', w.id, 'decline', ts)
+    clock = {'now': NOW}
+    runtime = tg.Runtime(make_actions(store, clock=lambda: clock['now']))
+
+    def retained():
+        with sqlite3.connect(db_path) as conn:
+            return [row[0] for row in conn.execute('SELECT created_at FROM api_actions ORDER BY created_at')]
+
+    assert retained() == [keep - 1, keep, NOW]
+    asyncio.run(runtime.tick())
+    assert retained() == [keep, NOW]
+    clock['now'] += 86400 - 1
+    asyncio.run(runtime.tick())
+    assert retained() == [keep, NOW]
+    clock['now'] += 1
+    asyncio.run(runtime.tick())
+    assert retained() == [NOW]
+
+
 def test_v2_database_adds_durable_actions_without_losing_windows(store,db_path):
     h = Harness(store); w = h.propose()
     with sqlite3.connect(db_path) as conn:

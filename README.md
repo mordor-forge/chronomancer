@@ -80,7 +80,11 @@ Read sessions last one hour; decisions require initData no older than ten minute
 Mini App when the session expires. Writes are POST-only with a client idempotency key: the decision
 and its original result are stored atomically, so a retry after a lost response or restart cannot
 apply it twice. Reusing a key for a different action is refused. Original replay results can be
-stale; the page refreshes current state after every action. Keys are retained in the plugin database.
+stale; the page refreshes current state after every action. The plugin database stores each key
+with the approver Telegram user id, window id, action, creation timestamp and the full original
+window snapshot (including name, reason and decision metadata). Keys and snapshots older than
+90 days are pruned at gateway startup and daily, alongside audit rows. After pruning, an old key
+has no replay guarantee; current window-state checks still apply.
 Requests are limited to 120 reads and 30 writes per approver per minute in each gateway process.
 There are no cookies, CORS headers or HTTP access logs. Binding outside loopback is refused.
 

@@ -321,6 +321,7 @@ class Runtime:
         now = int(self.clock())
         if now >= self._prune_at:
             await asyncio.to_thread(self.actions.store.prune_audit, now - 90 * 86400)
+            await asyncio.to_thread(self.actions.store.prune_api_actions, now - 90 * 86400)
             self._prune_at = now + 86400
         if not self.ready():
             return 0
