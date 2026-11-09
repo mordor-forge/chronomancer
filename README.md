@@ -221,8 +221,8 @@ line.
 ## Roadmap
 
 - Later: timeline lanes and emergency windows.
-- Later: reminders before a window, check-in for `presence_required` windows (today such a window
-  does not open, and its cards are not released), `window_propose` refusing triage cards up front.
+- Later: reminders before a window, windows that open only after the owner checks in (the store
+  has the field; no tool or button sets it today), `window_propose` refusing triage cards up front.
 - CLI: `hermes change-windows list` (read-only; approvals stay in Telegram).
 
 ## Development

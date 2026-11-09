@@ -51,3 +51,15 @@ def test_next_and_close(store):
 def test_no_tool_can_approve():
     from change_windows.tools import SCHEMAS
     assert not any("approve" in s["name"] or "open" in s["name"] for s in SCHEMAS)
+
+
+def test_agent_cannot_propose_a_window_that_needs_a_check_in(store):
+    # No surface lets the owner check in yet, so such a window could never open.
+    from change_windows.tools import PROPOSE
+    assert "presence_required" not in PROPOSE["parameters"]["properties"]
+    t = make(store)
+    w = call(t.propose, name="a", scope="k8s-prod", start=iso(NOW + 60), duration_minutes=30, reason="r",
+             presence_required=True)["window"]
+    assert w["presence_required"] is False
+    store.decide(w["id"], approve=True, by="telegram:1", now=NOW)
+    assert [o.id for o in store.open_windows("k8s-prod", NOW + 120)] == [w["id"]]

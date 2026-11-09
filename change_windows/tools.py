@@ -39,8 +39,6 @@ PROPOSE = {
                       "description": "Kanban task ids to release (unblock) when the window opens."},
             "board": {"type": "string", "description": "Kanban board slug for the cards (default board if empty)."},
             "exclusive": {"type": "boolean", "description": "No other window in this scope may overlap (default true)."},
-            "presence_required": {"type": "boolean",
-                                  "description": "The window opens only after the owner checks in (default false)."},
         },
         "required": ["name", "scope", "start", "reason"],
     },
@@ -146,8 +144,7 @@ class Tools:
             window, conflicts = self.store.propose(
                 name=str(args.get("name") or scope)[:120], scope=scope, start_ts=start, end_ts=end,
                 reason=reason[:2000], proposed_by=self.actor(), now=now,
-                exclusive=bool(args.get("exclusive", True)), presence=bool(args.get("presence_required", False)),
-                cards=cards)
+                exclusive=bool(args.get("exclusive", True)), cards=cards)  # no presence: no check-in surface yet
             if self.on_proposed is not None:
                 try:
                     self.on_proposed(window, conflicts)
