@@ -151,7 +151,8 @@ def make_hook(
     The mode is read first: ``off`` allows everything, also when the rules are broken (it is the
     recovery switch); a mode that cannot be read counts as ``enforce``. Rules failures block
     calls whose match cannot be determined, except the four window tools used to inspect,
-    propose or remove permission. Store/policy failures block matched calls.
+    propose or remove permission. Store/policy failures block matched calls, except in ``warn``
+    mode, which allows them unrecorded (self-protection hits still block).
     """
 
     def pre_tool_call(tool_name: str = "", args: Optional[dict[str, Any]] = None, task_id: str = "",
@@ -177,6 +178,8 @@ def make_hook(
             now = int(clock())
             decision = decide(tool_name, args, matched=matched, store=store, mode=mode, now=now, tz=tz())
         except Exception as exc:  # fail closed on a matched call
+            if mode == "warn" and all(r.scope != SELF_SCOPE for r in matched):
+                return None  # warn mode never blocks for a window; only self-protection blocks in it
             return {"action": "block",
                     "message": f"change-windows: blocked because the window store failed ({type(exc).__name__}). "
                                f"Tell the user; do not retry."}

@@ -181,3 +181,13 @@ def test_rules_are_matched_once_per_call(store):
     assert hook(tool_name='terminal', args=KAPPLY)['action'] == 'block'
     assert Counting.calls == 1
     assert store.audit_tail(1)[0]['rule_ids'] == '["k8s-write"]'
+
+
+def test_warn_mode_allows_when_the_store_fails_but_self_protect_still_blocks():
+    # warn "records and allows": a broken store must not turn the rollout mode into enforce.
+    hook = guard.make_hook(get_rules=lambda: RS, get_mode=lambda: "warn", store=Exploding())
+    assert hook(tool_name="terminal", args=KAPPLY) is None
+    out = hook(tool_name="terminal", args={"command": "hermes plugins disable change-windows"})
+    assert out["action"] == "block"
+    mixed = hook(tool_name="terminal", args={"command": "kubectl apply -f x; hermes plugins disable change-windows"})
+    assert mixed["action"] == "block"
