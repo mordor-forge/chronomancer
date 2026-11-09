@@ -28,13 +28,14 @@ how to ask for one.
 3. **Agents propose, owners approve.** `window_propose` stores a pending window and reports
    overlaps. No tool can approve. Approval needs the owner: a Telegram button from an
    allow-listed Telegram user id, or signed Mini App initData from that user. There is no CLI approval.
-4. **The guard** checks every tool call against the rules. An unmatched call costs one regular
-   expression pass and never touches the store. A matched call needs an open window for every
+4. **The guard** checks every tool call against the rules. An unmatched call costs a few regular
+   expression checks and never touches the store. A matched call needs an open window for every
    scope it touches; otherwise it is blocked. If the store fails, a matched call is blocked
    (fail closed). Matched calls are audited on a best-effort basis: tool, rule ids, scope, window
    and size; command text only if you opt in.
    If rules cannot be loaded or matched, calls are blocked because their match is unknown;
    the four window tools remain available to inspect, propose or remove permission.
+   `mode: "off"` is read before the rules, so it also ends that state.
 
 ## Agent tools
 

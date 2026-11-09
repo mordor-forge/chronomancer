@@ -148,3 +148,36 @@ def test_long_opt_in_preview_is_omitted_not_cut():
     cmd = 'kubectl apply --password="prefix s3cr3t-synthetic ' + "x" * 3000 + '" -f x'
     out = guard.preview("terminal", {"command": cmd}, include_command=True)
     assert "s3cr3t" not in out and "too long" in out
+
+
+def test_off_mode_allows_even_when_rules_cannot_be_loaded():
+    # The recovery switch must work exactly when the rules are what is broken.
+    def get_rules():
+        raise RuntimeError('synthetic configuration failure')
+
+    hook = guard.make_hook(get_rules=get_rules, get_mode=lambda: 'off', store=Exploding())
+    assert hook(tool_name='terminal', args=KAPPLY) is None
+    assert hook(tool_name='read_file', args={'path': '/etc/hosts'}) is None
+
+
+def test_unreadable_mode_enforces(store):
+    def get_mode():
+        raise RuntimeError('synthetic configuration failure')
+
+    hook = guard.make_hook(get_rules=lambda: RS, get_mode=get_mode, store=store, clock=lambda: 100)
+    assert hook(tool_name='terminal', args=KAPPLY)['action'] == 'block'
+    assert hook(tool_name='terminal', args={'command': 'ls -la'}) is None
+
+
+def test_rules_are_matched_once_per_call(store):
+    class Counting:
+        calls = 0
+
+        def match(self, tool_name, args):
+            Counting.calls += 1
+            return RS.match(tool_name, args)
+
+    hook = guard.make_hook(get_rules=Counting, get_mode=lambda: 'enforce', store=store, clock=lambda: 100)
+    assert hook(tool_name='terminal', args=KAPPLY)['action'] == 'block'
+    assert Counting.calls == 1
+    assert store.audit_tail(1)[0]['rule_ids'] == '["k8s-write"]'

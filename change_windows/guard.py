@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from .rules import SELF_SCOPE, RuleSet, extract_text
+from .rules import SELF_SCOPE, Rule, RuleSet, extract_text
 from .store import Store, Window
 
 MODES = ("enforce", "warn", "off")
@@ -76,19 +76,25 @@ def decide(
     tool_name: str,
     args: dict[str, Any],
     *,
-    rules: RuleSet,
     store: Store,
+    rules: Optional[RuleSet] = None,
+    matched: Optional[list[Rule]] = None,
     mode: str = "enforce",
     now: Optional[int] = None,
     tz: Any = None,
 ) -> Decision:
     """Pure policy: no matched rule -> allow; every matched scope needs an open window.
 
-    Store errors propagate to the caller, which turns them into a block (fail closed).
+    Give ``rules``, or ``matched`` when the caller has already matched them (the hook does, so
+    the regular expressions run once per call). Store errors propagate to the caller, which
+    turns them into a block (fail closed).
     """
     if mode == "off":
         return Decision("allow")
-    matched = rules.match(tool_name, args)
+    if matched is None:
+        if rules is None:
+            raise ValueError("decide needs rules or matched")
+        matched = rules.match(tool_name, args)
     if not matched:
         return Decision("allow")
     now = int(time.time()) if now is None else now
@@ -96,7 +102,7 @@ def decide(
     scopes = sorted({r.scope for r in matched})
     missing: list[str] = []
     window_id: Optional[str] = None
-    if SELF_SCOPE in scopes and mode != "off":  # self-protection blocks in warn mode too
+    if SELF_SCOPE in scopes:  # self-protection blocks in warn mode too
         return Decision("block", rule_ids, scopes, None, block_message([SELF_SCOPE], rule_ids, store, now, tz))
     for scope in scopes:
         open_now = store.open_windows(scope, now)
@@ -142,16 +148,24 @@ def make_hook(
 ) -> Callable[..., Optional[dict[str, str]]]:
     """Build a fail-closed callback. Unmatched calls never touch the store.
 
-    Rules failures block calls whose match cannot be determined, except the four window tools
-    used to inspect, propose or remove permission. Store/policy failures block matched calls.
+    The mode is read first: ``off`` allows everything, also when the rules are broken (it is the
+    recovery switch); a mode that cannot be read counts as ``enforce``. Rules failures block
+    calls whose match cannot be determined, except the four window tools used to inspect,
+    propose or remove permission. Store/policy failures block matched calls.
     """
 
     def pre_tool_call(tool_name: str = "", args: Optional[dict[str, Any]] = None, task_id: str = "",
                       session_id: str = "", **_: Any) -> Optional[dict[str, str]]:
         args = args if isinstance(args, dict) else {}
         try:
-            rules = get_rules()
-            if not rules.match(tool_name, args):
+            mode = get_mode()
+        except Exception:
+            mode = "enforce"
+        if mode == "off":
+            return None
+        try:
+            matched = get_rules().match(tool_name, args)
+            if not matched:
                 return None  # the fast path: most calls never touch the store
         except Exception as exc:
             if tool_name in ("window_propose", "window_list", "window_next", "window_close"):
@@ -161,7 +175,7 @@ def make_hook(
                                "Tell the user; do not retry."}
         try:
             now = int(clock())
-            decision = decide(tool_name, args, rules=rules, store=store, mode=get_mode(), now=now, tz=tz())
+            decision = decide(tool_name, args, matched=matched, store=store, mode=mode, now=now, tz=tz())
         except Exception as exc:  # fail closed on a matched call
             return {"action": "block",
                     "message": f"change-windows: blocked because the window store failed ({type(exc).__name__}). "
