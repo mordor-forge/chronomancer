@@ -182,3 +182,112 @@ def test_wrongly_typed_extra_rule_is_skipped_and_defaults_stay(raw):
     assert len(rs.errors) == 1 and "b" not in [r.id for r in rs.rules]
     assert rs.match("terminal", {"command": "kubectl apply -f x"})
     assert not rs.match("terminal", {"command": "ls -la"})
+
+
+# -- write forms added in 0.1.0: each addition has commands that must match and read-only ones that must not --
+
+ADDED_WRITES = [
+    # Argo CD: more application verbs, ApplicationSets, clusters, repositories, projects
+    ("argocd app create web --repo https://example.invalid/r.git --path k --dest-namespace web", "argocd-write"),
+    ("argocd app unset web -p image.tag", "argocd-write"),
+    ("argocd app actions run web restart --kind Deployment", "argocd-write"),
+    ("argocd --grpc-web appset create appset.yaml", "argocd-write"),
+    ("argocd appset delete web-set", "argocd-write"),
+    ("argocd cluster add kind-demo", "argocd-write"),
+    ("argocd cluster rm kind-demo", "argocd-write"),
+    ("argocd repo add https://example.invalid/r.git", "argocd-write"),
+    ("argocd repo rm https://example.invalid/r.git", "argocd-write"),
+    ("argocd proj create team-a", "argocd-write"),
+    ("argocd proj delete team-a", "argocd-write"),
+    ("argocd proj add-destination team-a https://kubernetes.default.svc web", "argocd-write"),
+    ("argocd proj remove-source team-a https://example.invalid/r.git", "argocd-write"),
+    # Terraform / OpenTofu state surgery
+    ("terraform state rm aws_instance.web", "iac-state"),
+    ("tofu state mv aws_instance.a aws_instance.b", "iac-state"),
+    ("terraform -chdir=envs/prod state push errored.tfstate", "iac-state"),
+    ("terraform state replace-provider hashicorp/aws registry.example.invalid/aws", "iac-state"),
+    ("terraform taint aws_instance.web", "iac-state"),
+    ("tofu untaint aws_instance.web", "iac-state"),
+    ("terraform refresh", "iac-state"),
+    ("terraform force-unlock 6f2d7a2c", "iac-state"),
+    ("terraform workspace delete staging", "iac-state"),
+    ("terragrunt run-all refresh", "iac-state"),
+    ("cd envs/prod && TF_IN_AUTOMATION=1 terraform state rm 'module.db.aws_db_instance.main'", "iac-state"),
+    # helmfile
+    ("helmfile apply", "helmfile-write"),
+    ("helmfile -e prod sync", "helmfile-write"),
+    ("helmfile --environment prod -f helmfile.yaml destroy", "helmfile-write"),
+    ("helmfile --file=apply.yaml -l app=web --debug apply --skip-deps", "helmfile-write"),
+    ("helmfile -n web delete", "helmfile-write"),
+    # certificate signing requests
+    ("kubectl certificate approve csr-abc12", "k8s-write"),
+    ("kubectl certificate deny csr-abc12", "k8s-write"),
+    # a merge through the forge API
+    ("gh api -X PUT repos/acme/web/pulls/42/merge", "pr-merge"),
+    ("gh api --method PUT /repos/acme/web/pulls/42/merge -f merge_method=squash", "pr-merge"),
+    ("gh api repos/acme/web/pulls/42/merge --method=PUT", "pr-merge"),
+]
+
+ADDED_READS = [
+    "argocd app get web",
+    "argocd app list --cluster add",                 # a cluster filter, not `cluster add`
+    "argocd app list --repo add",
+    "argocd app diff web",
+    "argocd app actions list web",
+    "argocd appset get web-set",
+    "argocd appset list",
+    "argocd cluster list",
+    "argocd cluster get kind-demo",
+    "argocd repo list",
+    "argocd repo get https://example.invalid/r.git",
+    "argocd proj list",
+    "argocd proj get team-a",
+    "argocd proj role list team-a",
+    "argocd proj windows list team-a",
+    "terraform state list",
+    "terraform state show aws_instance.web",
+    "terraform state pull",
+    "terraform state rm -dry-run aws_instance.web",  # prints what it would remove
+    "tofu state mv -dry-run aws_instance.a aws_instance.b",
+    "terraform plan -refresh=false",
+    "terraform plan -refresh-only",
+    "terraform plan -out refresh",
+    "terraform show refresh.tfplan",
+    "terraform plan -target aws_instance.taint",
+    "terraform output taint",
+    "terraform workspace list",
+    "terraform workspace show",
+    "terraform workspace select staging",
+    "terraform providers",
+    "terraform validate",
+    "helmfile diff",
+    "helmfile -f apply.yaml diff",
+    "helmfile --file apply.yaml template",
+    "helmfile -e apply diff",                        # an environment called apply
+    "helmfile --environment sync lint",
+    "helmfile -l name=delete list",
+    "helmfile status",
+    "helmfile build",
+    "kubectl get csr",
+    "kubectl describe csr csr-abc12",
+    "kubectl certificate --help",
+    "gh api repos/acme/web/pulls/42/merge",          # GET: "is it merged?"
+    "gh api repos/acme/web/pulls/42",
+    "gh api -X GET repos/acme/web/pulls/42/merge",
+    "gh pr view 42 --json mergeable",
+]
+
+
+@pytest.mark.parametrize("cmd,rule", ADDED_WRITES)
+def test_added_write_forms_match(cmd, rule):
+    assert ids("terminal", command=cmd) == [rule]
+
+
+@pytest.mark.parametrize("cmd", ADDED_READS)
+def test_added_write_forms_do_not_match_read_only_commands(cmd):
+    assert ids("terminal", command=cmd) == []
+
+
+def test_api_merge_needs_put_and_the_merge_path_in_one_command():
+    assert ids("terminal", command="gh api -X PUT repos/acme/web/pulls/42/update-branch; "
+                                   "gh api repos/acme/web/pulls/42/merge") == []

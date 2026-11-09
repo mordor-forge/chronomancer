@@ -20,8 +20,11 @@ how to ask for one.
 
 1. **Rules** say which tool calls are production writes and which **scope** they need
    (`k8s-prod`, `gitops-merge`, `infra`, or your own). Defaults cover `kubectl`/`oc` writes and
-   remote execution (`exec`, `cp`, `debug`, `run`), `helm` releases, `argocd app sync`,
-   `tofu`/`terraform`/`pulumi` apply, every `git push`, and `gh`/`tea`/`glab` PR merges. You can
+   remote execution (`exec`, `cp`, `debug`, `run`), `helm` releases, `helmfile`
+   apply/sync/destroy, Argo CD application, ApplicationSet, cluster, repository and project
+   changes, `tofu`/`terraform`/`pulumi` apply and destroy, `terraform`/`tofu` state changes
+   (`state rm|mv|push`, `taint`, `refresh`, `force-unlock`), every `git push`, and
+   `gh`/`tea`/`glab` PR merges (also `gh api` with `PUT` on a `/merge` path). You can
    add rules for MCP tools by name.
 2. **Windows** have a scope, a start and an end, and can be exclusive (no overlap in the scope)
    or shared.
@@ -150,6 +153,11 @@ line.
 - **A seatbelt, not a sandbox.** Text rules catch honest commands. A caller that hides a command
   (variables, encodings, a script file) can get past a regular expression. Keep real
   credentials scoped: use read-only kubeconfigs outside windows if you can.
+- **Only the commands the rules name.** The default rules know the CLIs by name and a list of
+  write verbs. They do not match a shell alias (`k apply`), a wrapper (`make deploy`,
+  `./deploy.sh`), a verb they do not list (for example `oc new-app`, `pulumi refresh`, `helmfile`
+  inside `execute_code`), a merge through another API client, or a command whose verb comes after
+  a `|` inside `$(...)`. Add your own rules for the ways your agents really deploy.
 - **Opaque code tools.** For `execute_code` the default rules match the binary name anywhere in
   the code (`kubectl`, `helm`, `tofu`, ...), not a verb, and `git` with `push` (or `gh` with
   `merge`) anywhere. Code that names them is treated as a write.

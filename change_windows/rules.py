@@ -22,6 +22,16 @@ SELF_SCOPE = "_self"
 _SEG = r"[^\n|;&]*?"
 
 
+# The new-in-0.1.0 forms below are positional: the verb must be a subcommand, not a flag value, a
+# file name or a resource name, so read-only commands that merely contain the word do not match.
+_NOT_A_WORD_PART = r"(?![\w.=/:-])"   # after a verb: not "refresh.tfplan", "apply.yaml", "taint=x"
+_NOT_A_FLAG_VALUE = r"(?<![-\w])"     # before a noun: not "--cluster add"
+_TF_GLOBAL = r"(?:\s+-[\w-]+(?:=\S+)?|\s+run-all)*"  # terraform -chdir=DIR ..., terragrunt run-all ...
+_HELMFILE_GLOBAL = (r"(?:\s+(?:-[felnc]\s+\S+|--?[\w-]+=\S+|"
+                    r"--(?:file|environment|selector|namespace|chart|kube-context|state-values-file|"
+                    r"state-values-set|helm-binary|log-level)\s+\S+|"
+                    r"--(?:debug|quiet|no-color|interactive|skip-deps|enable-live-output)|-[qi]))*")
+
 _SEPARATORS = "\n|;&"
 _QUOTES = re.compile(r"[\\\"'`]")
 
@@ -71,7 +81,8 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "scope": "k8s-prod",
         "tools": ["terminal"],
         "match": rf"\b(kubectl|oc)\b{_SEG}\b(apply|create|delete|patch|replace|scale|edit|label|annotate|"
-                 rf"drain|cordon|uncordon|taint|expose|autoscale|rollout\s+(restart|undo|pause|resume)|set\s+\w+)\b",
+                 rf"drain|cordon|uncordon|taint|expose|autoscale|rollout\s+(restart|undo|pause|resume)|set\s+\w+|"
+                 rf"certificate\s+(approve|deny))\b",
         "description": "kubectl / oc commands that change cluster state",
     },
     {
@@ -92,8 +103,11 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "id": "argocd-write",
         "scope": "k8s-prod",
         "tools": ["terminal"],
-        "match": rf"\bargocd\b{_SEG}\bapp\s+(sync|delete|rollback|set|patch|terminate-op)\b",
-        "description": "Argo CD application changes",
+        "match": rf"\bargocd\b{_SEG}\b(?:app(?:\s+(?:sync|delete|rollback|set|unset|patch|create|terminate-op|"
+                 rf"actions\s+run)|set\s+(?:create|delete))|"
+                 rf"{_NOT_A_FLAG_VALUE}(?:cluster\s+(?:add|rm|set|rotate-auth)|repo\s+(?:add|rm)|"
+                 rf"proj\s+(?:create|delete|set|edit|add-[\w-]+|remove-[\w-]+)))\b",
+        "description": "Argo CD application, ApplicationSet, cluster, repository and project changes",
     },
     {
         "id": "iac-apply",
@@ -101,6 +115,22 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "tools": ["terminal"],
         "match": rf"\b(tofu|terraform|terragrunt|pulumi)\b{_SEG}\b(apply|destroy|import|up)\b",
         "description": "infrastructure-as-code apply / destroy",
+    },
+    {
+        "id": "iac-state",
+        "scope": "infra",
+        "tools": ["terminal"],
+        "match": rf"\b(?:tofu|terraform|terragrunt)\b{_TF_GLOBAL}\s+(?:"
+                 rf"state\s+(?:rm|mv)\b(?![^\n|;&]*\s-dry-run\b)|state\s+(?:push|replace-provider)\b|"
+                 rf"(?:taint|untaint|refresh|force-unlock){_NOT_A_WORD_PART}|workspace\s+delete\b)",
+        "description": "terraform / tofu state changes outside apply: state rm, mv, push, taint, refresh, force-unlock",
+    },
+    {
+        "id": "helmfile-write",
+        "scope": "k8s-prod",
+        "tools": ["terminal"],
+        "match": rf"\bhelmfile\b{_HELMFILE_GLOBAL}\s+(?:apply|sync|destroy|delete){_NOT_A_WORD_PART}",
+        "description": "helmfile apply, sync, destroy and delete",
     },
     {
         "id": "git-push",
@@ -114,8 +144,10 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "id": "pr-merge",
         "scope": "gitops-merge",
         "tools": ["terminal"],
-        "match": rf"\b(gh|tea|glab)\b{_SEG}\b(pr|mr)\s+merge\b",
-        "description": "pull / merge request merges from the CLI",
+        "match": rf"\b(gh|tea|glab)\b{_SEG}\b(pr|mr)\s+merge\b|"
+                 # gh api with PUT on .../pulls/N/merge, the method before or after the path
+                 rf"\bgh\s+api\b(?=[^\n|;&]*(?:\s-X\s*|\s--method[=\s]\s*)PUT\b)[^\n|;&]*/pulls/\d+/merge\b",
+        "description": "pull / merge request merges from the CLI, or through `gh api` with PUT",
     },
     {
         # Code tools are opaque: match the binary name anywhere, not a verb.
