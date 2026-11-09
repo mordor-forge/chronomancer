@@ -3,11 +3,13 @@
 Approved time windows for production changes made by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
 > Status: **first release** (0.1.0). The guard, the four agent tools and the Telegram buttons,
-> card release, start/end notices and Mini App are implemented. `hermes plugins doctor` and
+> card release, start/end notices, Mini App and Hermes Desktop half are implemented. `hermes plugins doctor` and
 > `validate` pass on Hermes v0.23.0. Local tests include real HTTP requests and a phone-sized
 > Chromium flow. The real Telegram phone/HTTPS check was waived
 > by the owner, not passed; browser tests use synthetic Telegram signatures. Real phone, HTTPS
-> routing and Telegram-signed initData remain unverified.
+> routing and Telegram-signed initData remain unverified. The Desktop half is tested against
+> stand-ins for the Desktop SDK and over HTTP against its backend routes; it has not been run
+> inside the Hermes Desktop app yet.
 
 ## Why
 
@@ -55,8 +57,15 @@ gateway connected to Telegram (see [Limits](#limits-read-before-you-rely-on-it))
 2. **Windows** have a scope, a start and an end, and can be exclusive (no overlap in the scope)
    or shared.
 3. **Agents propose, owners approve.** `window_propose` stores a pending window and reports
-   overlaps. No tool can approve. Approval needs the owner: a Telegram button from an
-   allow-listed Telegram user id, or signed Mini App initData from that user. There is no CLI approval.
+   overlaps. No agent tool can approve or decline. Approval needs the owner, through one of three
+   channels, and every decision records which one:
+   - **Telegram**: a button press from an allow-listed Telegram user id.
+   - **Mini App**: Telegram-signed initData from that user, verified on every request.
+   - **Hermes Desktop**: the Change windows page. This one is not signed. It trusts the local
+     Desktop session that Hermes authenticated, and code that runs as your OS user can reach the
+     same local API. Set `approval.desktop: false` for Telegram-only approval.
+
+   There is no CLI approval.
 4. **The guard** checks every tool call against the rules. An unmatched call costs a few regular
    expression checks and never touches the store. A matched call needs an open window for every
    scope it touches; otherwise it is blocked. If the store fails, a matched call is blocked
@@ -129,6 +138,47 @@ The listener is optional (`miniapp_url` empty disables it), one per profile, sta
 A reconnect reuses it and rebinds bot identity; plugin unload closes it. If the port is occupied,
 check configuration and restart the gateway; the guard and Telegram buttons continue working.
 
+## Desktop
+
+The package also carries a Hermes Desktop half (`desktop/plugin.js`) and its backend routes
+(`dashboard/plugin_api.py`, mounted at `/api/plugins/change-windows/`). Install the plugin on the
+machine the Desktop app runs on, enable it for the profile (`hermes plugins enable change-windows`,
+which also lets the backend routes load), restart the gateway, and turn the Desktop half on under
+**Capabilities → Plugins** (Desktop halves are off until you do). What appears:
+
+- **Page and sidebar row "Change windows".** Windows from today to seven days ahead, grouped as
+  waiting for your decision, approved, open now, and closed/expired/declined. Each shows scope,
+  time, reason, overlap warnings, linked cards and the channel it was decided in. Below: recent
+  decisions with their channel, and the last 20 matched calls (metadata only; command previews
+  and session/task ids are never sent to this page).
+- **Actions.** Approve and Decline on a pending window, Close now on an approved or open one.
+  Each asks for confirmation first and sends one idempotency key per dialog, so a retry cannot
+  apply twice. The rules are the Telegram ones: a proposal that has ended, or that overlaps an
+  approved exclusive window, is refused with the same message.
+- **Status-bar chip.** The open window and its time left; else the next approved window; else
+  nothing. Click it to open the page.
+- **Kanban card badges.** A card linked to a window shows the window's state and time
+  (for example "Open · 42 min left", "Window in 2 h").
+- **Palette command** "Open change windows".
+
+On a wide window the page is a table. When Desktop reports a narrow viewport
+(`host.state.viewport.narrow`) it becomes stacked cards with large buttons, like the Mini App.
+The page polls every 7 seconds and uses no socket.
+
+**Trust.** Telegram and Mini App approvals are signed by Telegram. A Desktop approval is not: the
+routes sit behind Hermes's own authentication (the Desktop session, or a signed-in dashboard
+session) and add no identity of their own. Anything that can use that session can approve, and
+code running as your OS user can reach the local API. The decision is stored as `desktop` with
+the channel `desktop`, and the Telegram message says "Decided by desktop in Hermes Desktop".
+`approval.desktop: false` makes the approve and decline routes answer 403 and hides those two
+buttons; Close now stays, because closing only removes permission. The `self-protect` rule blocks
+agent calls that name `/api/plugins/change-windows`, as a text rule (see Limits).
+
+The backend routes work without Telegram. Card release and the open/end notices are still done by
+the gateway's scheduler, so they need the gateway connected to Telegram as before; after a Desktop
+approval the scheduler picks the change up within about 10 seconds. The Telegram proposal message
+is not edited after a Desktop decision; its buttons answer with the current state when pressed.
+
 ## Kanban cards
 
 `window_propose` takes Kanban task ids (`cards`, optionally `board`). When the window opens, the
@@ -151,6 +201,7 @@ capacity. A `triage` card cannot be released through any public surface, so it i
 | `rules` | `[]` | Extra rules: `{id, scope, tools: [fnmatch], match: regex, field: command\|code\|*}`. |
 | `disabled_rules` | `[]` | Default rule ids to turn off. `self-protect` cannot be turned off. |
 | `approver_telegram_ids` | `[]` | Telegram user ids that may approve, decline and close windows and read `/windows`. Empty = nobody. |
+| `approval.desktop` | `true` | `true`: Approve and Decline also work on the Hermes Desktop page, which trusts the local Desktop session. `false`: Telegram and Mini App only; the Desktop page still lists windows and can close them. Any value other than `true` counts as `false`. Write it as `approval: {desktop: false}`. |
 | `owner_chat_id` | `0` | Chat that gets proposal messages. `0` = the private chat of the first approver. |
 | `miniapp_url` | empty | Your HTTPS URL; empty disables the listener and Open list buttons. |
 | `miniapp_host` | `127.0.0.1` | Loopback listen address only (also accepts `::1` or `localhost`). |
@@ -202,8 +253,12 @@ line.
   `hermes plugins disable|remove|... change-windows`, edits of a config under `.hermes/` that name
   `change-windows`), also in warn mode, but it is a regex too. A config edit that sets `mode: off`
   without naming the plugin is not caught, nor is a relative path that leaves out those
-  directory names, nor a Hermes home that is not called `.hermes`. Approval is only through Telegram from an allow-listed
-  user id, never through a CLI an agent could drive.
+  directory names, nor a Hermes home that is not called `.hermes`. Approval is through Telegram from an allow-listed
+  user id, or through the Hermes Desktop page, never through an agent tool or a CLI. The Desktop
+  routes are a local HTTP API behind Hermes's authentication: `self-protect` blocks agent calls
+  that name `/api/plugins/change-windows`, but a caller that hides the URL, and already holds a
+  valid Hermes session credential, could approve. If that matters, set `approval.desktop: false`;
+  approval is then Telegram-signed only.
 - **Conservative on purpose.** Every `git push` needs a window (refspecs, upstreams and wildcards
   are not parsed); disable `git-push` and add a narrower rule if your agent pushes feature branches.
   `kubectl exec` counts as a write. A resource named `delete` in `kubectl get configmap delete` is
@@ -214,9 +269,16 @@ line.
   work where it can observe the result. The scheduler runs in
   the gateway: with the gateway down, cards are released when it comes back (if the window has not
   ended), and the guard keeps working without it.
-- **Telegram availability.** Approvals, Mini App and scheduled effects require the gateway
-  connected to Telegram and `plugins.isolation: in_process`. With no Telegram or with `host`
-  isolation, the guard and tools still work; new windows cannot be approved.
+- **Telegram availability.** Telegram approvals, the Mini App and scheduled effects (proposal
+  messages, card release, open/end notices) require the gateway connected to Telegram and
+  `plugins.isolation: in_process`. With no Telegram or with `host` isolation, the guard and tools
+  still work, and a window can only be approved on the Hermes Desktop page (if `approval.desktop`
+  is on); its cards are not released and no notice is sent.
+- **Desktop half not yet run in the app.** It is tested against stand-ins for the Desktop SDK,
+  not inside Hermes Desktop, so its look and theming are unverified. The status-bar chip keeps
+  the data fresh for the Kanban badges; if the chip is not mounted, badges update only while the
+  page is open. After a profile switch the page can show the previous profile's windows for up
+  to 7 seconds.
 - **Admission only.** Closing a window blocks later calls; it does not stop a command that already
   started.
 
@@ -225,9 +287,11 @@ line.
 - **Window records:** id, name, scope, start/end times, exclusive/presence flags, state, kind,
   reason, linked card ids/boards, creation/decision/check-in/close times and close reason. The
   proposing profile name is stored as `agent:<profile>`; a decision records the approver Telegram
-  user id as `telegram:<id>`, and the close reason includes the closing actor. Window records
-  have no automatic expiry. Each Mini App idempotency key stores a full decision snapshot plus
-  approver id, window id, action and timestamp for 90 days (see Mini App above). The effects
+  user id as `telegram:<id>` and the channel (`telegram`, `miniapp` or `desktop`); a Desktop
+  decision has no user identity and is recorded as `desktop`. The close reason includes the
+  closing actor. Window records
+  have no automatic expiry. Each Mini App or Desktop idempotency key stores a full decision snapshot plus
+  approver id (0 for Desktop), window id, action and timestamp for 90 days (see Mini App above). The effects
   queue stores window id, effect kind, due/claim/completion times, attempt count and result/error
   text; it has no automatic expiry. Telegram `initData` is verified in memory and never stored.
 - **Reads:** the arguments of every tool call, to match rules. For matched calls the plugin's own
@@ -241,7 +305,8 @@ line.
   remember that SQLite and backups can keep old pages. Treat the database as sensitive.
 - **Network:** messages to the configured owner chat, and answers to button presses and
   `/windows`, through the gateway's own Telegram bot. The Mini App page loads
-  Telegram's `telegram-web-app.js` from telegram.org in the Telegram client.
+  Telegram's `telegram-web-app.js` from telegram.org in the Telegram client. The Desktop half
+  talks only to the plugin's own routes on the Hermes backend the Desktop app is connected to.
 - **Background work:** inside the gateway, when Telegram connects: one supervised task per profile
   (`ctx.spawn_task`) that sends proposal messages and the start and end notices, and releases
   linked cards. When configured, a second supervised task serves the Mini App on loopback
@@ -260,7 +325,7 @@ line.
 - Later: timeline lanes and emergency windows.
 - Later: reminders before a window, windows that open only after the owner checks in (the store
   has the field; no tool or button sets it today), `window_propose` refusing triage cards up front.
-- CLI: `hermes change-windows list` (read-only; approvals stay in Telegram).
+- CLI: `hermes change-windows list` (read-only; approvals stay in Telegram and Desktop).
 
 ## Development
 
@@ -271,6 +336,11 @@ cd tests && uv run --no-project --with 'pytest>=8,<9' --with 'cryptography>=42,<
 cd .. && dev/scratch-env.sh hermes plugins doctor . --ci
 dev/scratch-env.sh hermes plugins validate . --install-deps
 ```
+
+Add `--with 'fastapi>=0.104,<1' --with 'httpx>=0.28,<1'` to also run the Desktop backend routes
+over HTTP (`test_plugin_api.py`; skipped without them, and `test_desktop_api.py` covers the same
+logic without a web framework). The Desktop plugin tests run `desktop/plugin.js` in `node` against
+stand-ins for the Desktop SDK and are skipped without `node`.
 
 The Telegram tests use real python-telegram-bot objects with an offline fake Bot API (no
 network, no token). HTTP tests use generated signing keys; the browser test uses system `chromium`

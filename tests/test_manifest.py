@@ -42,3 +42,31 @@ def test_release_version_is_consistent_and_readme_has_the_install_line():
     assert "hermes plugins install Gdetrane/hermes-change-windows" in readme
     assert "hermes plugins enable change-windows" in readme
     assert "waived" in readme.split("## Why")[0]  # the phone check is stated as not passed
+
+
+def test_desktop_approval_setting_and_trust_statement_are_documented():
+    manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text())
+    spec = manifest["config_schema"]["approval.desktop"]
+    assert spec["type"] == "bool" and spec["default"] is True
+    keys = list(manifest["config_schema"])
+    assert keys.index("approval.desktop") == keys.index("approver_telegram_ids") + 1  # next to the approver settings
+    readme = (ROOT / "README.md").read_text()
+    assert "| `approval.desktop` | `true` |" in readme
+    how = readme.split("## How it works")[1].split("## Agent tools")[0]
+    assert "No agent tool can approve or decline" in how and "approval.desktop: false" in how
+    assert "Telegram-signed initData" in how and "not signed" in how
+    desktop = readme.split("## Desktop")[1].split("## Kanban cards")[0]
+    for phrase in ("Status-bar chip", "Kanban card badges", "Palette command", "sidebar row", "narrow viewport",
+                   "code running as your OS user can reach the local API", "403", "Close now stays"):
+        assert phrase in desktop, phrase
+    assert "mobile" not in desktop.lower()  # no claim about the Hermes mobile app
+    assert "has not been run\n> inside the Hermes Desktop app" in readme.split("## Why")[0]
+
+
+def test_dashboard_manifest_points_at_the_backend_routes():
+    import json
+    data = json.loads((ROOT / "dashboard" / "manifest.json").read_text())
+    assert data["name"] == "change-windows" and data["api"] == "plugin_api.py"
+    assert data["tab"]["hidden"] is True  # backend routes only: no tab in the web dashboard
+    assert (ROOT / "dashboard" / data["api"]).is_file() and (ROOT / "desktop" / "plugin.js").is_file()
+    assert data["version"] == yaml.safe_load((ROOT / "plugin.yaml").read_text())["version"]
