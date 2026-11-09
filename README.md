@@ -182,6 +182,14 @@ line.
 
 ## Disclosure
 
+- **Window records:** id, name, scope, start/end times, exclusive/presence flags, state, kind,
+  reason, linked card ids/boards, creation/decision/check-in/close times and close reason. The
+  proposing profile name is stored as `agent:<profile>`; a decision records the approver Telegram
+  user id as `telegram:<id>`, and the close reason includes the closing actor. Window records
+  have no automatic expiry. Each Mini App idempotency key stores a full decision snapshot plus
+  approver id, window id, action and timestamp for 90 days (see Mini App above). The effects
+  queue stores window id, effect kind, due/claim/completion times, attempt count and result/error
+  text; it has no automatic expiry. Telegram `initData` is verified in memory and never stored.
 - **Reads:** the arguments of every tool call, to match rules. For matched calls the plugin's own
   SQLite database (`<HERMES_HOME>/plugin-data/change-windows/`) stores the tool name, rule ids,
   scope, window, session/task ids and the argument size or names, not the values. With
