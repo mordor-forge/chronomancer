@@ -312,3 +312,22 @@ def test_self_protect_leaves_other_plugins_and_checkouts_alone():
     assert ids("patch", path="/home/u/work/hermes-change-windows/change_windows/guard.py",
                old_string="a", new_string="b") == []
     assert ids("write_file", path="/home/u/work/plugins/change-windows/notes.md", content="x") == []
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("terminal", {"command": "curl -X POST http://127.0.0.1:9119/api/plugins/change-windows/windows/W1A2B3C/approve "
+                             "-d '{\"key\": \"0000000000000000\"}'"}),
+    ("terminal", {"command": "curl -s localhost:9119/api/plugins/change-windows/windows"}),
+    ("terminal", {"command": "wget -qO- 'http://localhost:9119/api/plugins/change-windows/audit'"}),
+    ("execute_code", {"code": "import urllib.request as u\nu.urlopen(u.Request(base + '/api/plugins/change-windows/"
+                              "windows/' + wid + '/approve', data=b'{}', method='POST'))"}),
+    ("write_file", {"path": "/tmp/approve.sh", "content": "curl -X POST $H/api/plugins/change-windows/windows/$1/approve"}),
+])
+def test_self_protect_covers_the_owners_local_api_routes(tool, args):
+    assert "self-protect" in ids(tool, **args)
+
+
+def test_self_protect_leaves_other_plugins_api_routes_alone():
+    assert ids("terminal", command="curl -s localhost:9119/api/plugins/kanban/board") == []
+    assert ids("terminal", command="curl -s localhost:9119/api/status") == []
+    assert ids("terminal", command="ls ~/work/api/plugins/") == []

@@ -183,11 +183,13 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "match": r"plugin-data[/\\]+change-windows|plugins\.entries\.change-windows|"
                  # the installed plugin's own code, in the default home or a profile
                  r"\.hermes[/\\]+(?:[^\s,]*[/\\]+)?plugins[/\\]+(?:hermes-)?change-windows\b|"
+                 # the owner's local HTTP routes (Hermes Desktop approves through them)
+                 r"\bapi[/\\]+plugins[/\\]+change-windows\b|"
                  r"\bhermes\s+(?:-\S+\s+)*change-windows\s+(?!(?:list|show|status|help)(?![\w-]))\S|"
                  r"\bhermes\s+plugins\s+(?:disable|remove|uninstall|update|install)\s+(?:\S+\s+)*change-windows\b|"
                  r"\.hermes[/\\][^\s,]*config\.ya?ml[\s\S]*\bchange-windows\b|"
                  r"\bchange-windows\b[\s\S]*\.hermes[/\\][^\s,]*config\.ya?ml",
-        "description": "the plugin's own store, settings, installed code and plugin state",
+        "description": "the plugin's own store, settings, installed code, local API routes and plugin state",
     },
 ]
 
