@@ -224,3 +224,72 @@ def test_eight_local_calendar_days(h):
             assert (data['start'],data['end']) == (start,end)
             assert [w['id'] for w in data['windows']] == [inside.id]
     asyncio.run(main())
+
+
+@pytest.mark.parametrize('host', ['0.0.0.0', '192.0.2.1', 'example.invalid'])
+def test_listener_refuses_non_loopback_before_binding(h, host, monkeypatch, caplog):
+    from aiohttp import web
+    h.settings.update(miniapp_host=host, miniapp_port=18782)
+    binds = []
+
+    def forbidden_bind(*args, **kwargs):
+        binds.append((args, kwargs))
+        raise AssertionError('non-loopback listener must never be constructed')
+
+    monkeypatch.setattr(web, 'TCPSite', forbidden_bind)
+
+    async def main():
+        task = asyncio.create_task(miniapp.serve(tg.Runtime(h.actions)))
+        try:
+            for _ in range(100):
+                if caplog.records or task.done():
+                    break
+                await asyncio.sleep(.001)
+            assert not task.done()  # failure waits for cancellation, rather than respawning
+            assert binds == []
+            assert caplog.text.count('Mini App listener unavailable') == 1
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(main())
+
+
+def test_authenticated_requests_never_persist_initdata(h, db_path):
+    async def main():
+        w = h.propose()
+        headers = h.headers()
+        assert 'auth_date=' in headers['X-Telegram-Init-Data']
+        assert 'signature=' in headers['X-Telegram-Init-Data']
+        async with TestClient(TestServer(h.app())) as client:
+            assert (await client.post(f'/api/windows/{w.id}/approve', headers=headers)).status == 200
+            assert (await client.get('/api/windows', headers=headers)).status == 200
+        # Keep a connection open while inspecting SQLite/WAL, then inspect checkpointed data too.
+        with sqlite3.connect(db_path) as conn:
+            assert conn.execute('SELECT count(*) FROM api_actions').fetchone()[0] == 1
+            for checkpoint in (False, True):
+                if checkpoint:
+                    conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                data = b''.join(path.read_bytes() for path in db_path.parent.glob(db_path.name + '*'))
+                assert b'auth_date' not in data and b'signature' not in data
+                assert headers['X-Telegram-Init-Data'].encode() not in data
+    asyncio.run(main())
+
+
+def test_idempotency_keys_are_scoped_per_approver(h, db_path):
+    h.settings['approver_telegram_ids'] = [42, 43]
+
+    async def main():
+        windows = [h.propose(exclusive=False), h.propose(exclusive=False)]
+        async with TestClient(TestServer(h.app())) as client:
+            for user, window in zip((42, 43), windows):
+                path = f'/api/windows/{window.id}/approve'
+                first = await client.post(path, headers=h.headers(user=user))
+                assert first.status == 200
+                body = await first.json()
+                assert body['window']['id'] == window.id and body['window']['state'] == 'approved'
+                replay = await client.post(path, headers=h.headers(user=user))
+                assert replay.status == 200 and await replay.json() == body
+        with sqlite3.connect(db_path) as conn:
+            assert conn.execute('SELECT user_id, request_key FROM api_actions ORDER BY user_id').fetchall() == [
+                (42, KEY), (43, KEY)]
+    asyncio.run(main())
