@@ -46,7 +46,8 @@ button{font:inherit;cursor:pointer;border:0;border-radius:12px;padding:12px 16px
 #notice{white-space:pre-wrap}section{margin-top:28px}
 #audit{list-style:none;padding:0;margin:0;font-size:14px}#audit li{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
 #audit time{flex:0 0 auto;width:11ch;font:13px/1.6 var(--mono)}#audit .glyph{flex:0 0 auto;width:1.2em;font-weight:700}#audit .what{flex:1 1 auto;min-width:0;white-space:pre-wrap}
-dialog{width:calc(100% - 24px);max-width:620px;max-height:90dvh;border:0;border-radius:20px;padding:20px;background:var(--bg);color:var(--text)}dialog::backdrop{background:#0008}
+/* The sheet covers the page: nothing of the list shows under its bottom edge. */
+dialog{width:100%;max-width:680px;height:100dvh;max-height:100dvh;margin:0 auto;border:0;border-radius:0;padding:20px 16px calc(20px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text)}dialog::backdrop{background:var(--bg,#000)}
 .sheetbar{display:flex;justify-content:space-between;gap:10px;margin-bottom:10px}.sheetbar button{background:var(--card);color:var(--text);border:1px solid var(--text)}
 #detail-name{font-size:20px;overflow-wrap:anywhere}#detail-reason{white-space:pre-wrap;overflow-wrap:anywhere}#detail-meta{white-space:pre-wrap;font-size:14px}
 #detail-cards{list-style:none;padding:0;margin:0 0 12px;font-size:14px}#detail-cards li{padding:8px 10px;border:1px solid var(--line);border-radius:10px;margin-top:6px;overflow-wrap:anywhere}

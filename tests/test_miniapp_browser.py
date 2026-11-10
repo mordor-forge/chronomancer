@@ -164,6 +164,9 @@ def test_door_runway_and_the_conflict_sheet_in_a_light_and_a_dark_telegram_theme
             assert await page.locator('#detail-name').text_content() == 'Postgres minor upgrade'
             assert await page.locator('#detail-stamp').text_content() == 'Awaiting your decision'
             assert await page.locator('#detail-id').text_content() == b.id and await page.locator('#back').is_hidden()
+            # the sheet covers the whole page: no list text shows under its bottom edge
+            box = await page.locator('#detail').bounding_box()
+            assert box['y'] == 0 and box['height'] == 844 and box['width'] == 390
             # tapping the overlap opens the OTHER window with the explanation; Back returns
             await page.locator('#detail-overlaps .badge').click()
             assert await page.locator('#detail-name').text_content() == 'Index rebuild on orders'
