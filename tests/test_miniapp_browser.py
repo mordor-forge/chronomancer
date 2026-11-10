@@ -50,7 +50,7 @@ def test_phone_size_browser_decisions_and_safe_text(store, tmp_path):
             await page.locator('#dismiss').click()
             await page.get_by_role('button',name='Alternative rollout',exact=False).click()
             await page.locator('#approve').click()
-            await page.locator('#detail-status').filter(has_text='overlaps approved').wait_for()
+            await page.locator('#detail-status').filter(has_text="Can't approve 'Alternative rollout': it overlaps '<img src=x onerror=alert(1)>' (open, ").wait_for()
             assert store.get(b.id).state == 'pending'
             await page.locator('#decline').click()
             await page.locator('#detail-state').filter(has_text='declined').wait_for()
