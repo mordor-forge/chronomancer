@@ -98,7 +98,8 @@ def test_approval_refuses_an_overlap_with_an_approved_window(store):
     reply = actions.on_button(OWNER, f"cw:approve:{b.id}")
     assert reply.alert and reply.toast.startswith("Can't approve 'b': it overlaps 'a' (approved, ")
     assert store.get(b.id).state == "pending"
-    assert f"OVERLAPS: {a.id} (approved, a)" in reply.text
+    assert f"Overlaps 'a' (approved, Fri 15 Jan 08:10-09:10 UTC, proposed by test): overlaps 08:10-09:10, 1 h." in reply.text
+    assert reply.buttons[-1] == [("Conflicts (1)", f"cw:conflicts:{b.id}")]
 
 
 def test_an_ended_proposal_cannot_be_approved(store):
@@ -113,9 +114,63 @@ def test_proposal_message_shows_overlaps_and_buttons(store):
     b = propose(store, name="b")
     text, buttons = make(store).window_message(store.get(b.id), NOW)
     assert text.startswith("Window proposal: b")
-    assert f"OVERLAPS: {a.id} (pending, a)" in text
+    # a person reads the name, the state, the span, the proposer, the shared span and the rule; the id is last
+    assert (f"Overlaps 'a' (pending, Fri 15 Jan 08:10-09:10 UTC, proposed by test): overlaps 08:10-09:10, 1 h. "
+            f"Why: same scope k8s-prod; both windows are exclusive. [{a.id}]") in text
     assert "Cards: t_ab12cd" in text and "Reason: roll out web v2" in text and "Proposed by agent:test" in text
-    assert buttons == [[("Approve", f"cw:approve:{b.id}"), ("Decline", f"cw:decline:{b.id}")]]
+    assert text.splitlines()[1] == "scope k8s-prod" and text.splitlines()[-1] == f"id {b.id}"
+    assert buttons == [[("Approve", f"cw:approve:{b.id}"), ("Decline", f"cw:decline:{b.id}")],
+                       [("Conflicts (1)", f"cw:conflicts:{b.id}")]]
+    alone = propose(store, scope="db-prod", name="alone")
+    assert make(store).window_message(alone, NOW)[1] == [[("Approve", f"cw:approve:{alone.id}"),
+                                                         ("Decline", f"cw:decline:{alone.id}")]]
+
+
+def test_conflicts_button_explains_each_conflict_and_show_posts_that_window(store):
+    a, b, c = propose(store, name="a"), propose(store, name="b"), propose(store, name="c", start=NOW + 3000, end=NOW + 9000)
+    actions = make(store)
+    actions.on_button(OWNER, f"cw:approve:{a.id}")
+    reply = actions.on_button(OWNER, f"cw:conflicts:{b.id}")
+    assert not reply.alert and reply.toast == "2 conflicts explained below." and len(reply.messages) == 2
+    text, buttons = reply.messages[0]
+    assert text.splitlines() == [
+        "Conflict 1 of 2 for 'b'",
+        "Other window: 'a' (approved)",
+        "Fri 15 Jan 08:10-09:10 UTC · scope k8s-prod · proposed by test",
+        "Shared span: 08:10-09:10, 1 h",
+        "Rule: same scope k8s-prod; both windows are exclusive",
+        "What it means: Approving this window is refused while 'a' is approved.",
+        "Ways out: Decline one of them, or ask the agent to propose another time.",
+        f"id {a.id}"]
+    assert buttons == [[("Show", f"cw:show:{a.id}")]]
+    assert "Shared span: 08:50-09:10, 20 min" in reply.messages[1][0] and reply.messages[1][1] == [[("Show", f"cw:show:{c.id}")]]
+    # Show posts the other window's own message with its own buttons
+    shown = actions.on_button(OWNER, f"cw:show:{a.id}")
+    assert not shown.alert and shown.text is None and len(shown.messages) == 1
+    text, buttons = shown.messages[0]
+    assert text.startswith("Window approved: a") and buttons[0] == [("Close now", f"cw:close:{a.id}")]
+    # nothing was decided by looking
+    assert [store.get(w.id).state for w in (a, b, c)] == ["approved", "pending", "pending"]
+    actions.on_button(OWNER, f"cw:decline:{c.id}")
+    actions.on_button(OWNER, f"cw:close:{a.id}")
+    gone = actions.on_button(OWNER, f"cw:conflicts:{b.id}")
+    assert gone.toast == "No conflict any more." and gone.messages == [] and len(gone.buttons) == 1
+    assert actions.on_button(OWNER, "cw:show:WABCDEF").alert
+
+
+def test_conflicts_and_show_are_for_approvers_only(store):
+    a, b = propose(store, name="a"), propose(store, name="b")
+    for data in (f"cw:conflicts:{b.id}", f"cw:show:{a.id}"):
+        reply = make(store).on_button(STRANGER, data)
+        assert reply.alert and "Only an approver" in reply.toast and reply.text is None and reply.messages == []
+
+
+def test_card_titles_are_plain_text_next_to_the_id(store, monkeypatch):
+    from change_windows import cards
+    monkeypatch.setattr(cards, "_reader", cards.CardReader(lambda tool, args: {"task": {
+        "title": "<b>Upgrade</b> *Postgres*\n_now_", "status": "blocked", "assignee": "dba"}}))
+    text, _ = make(store).window_message(propose(store), NOW)
+    assert "Cards: '<b>Upgrade</b> *Postgres* _now_' (blocked, dba) [t_ab12cd]" in text  # no parse mode: markup stays text
 
 
 def test_message_text_is_bounded(store):
@@ -139,9 +194,10 @@ def test_windows_text_today_and_tomorrow(store):
     later = propose(store, start=NOW + 5 * 86400, end=NOW + 5 * 86400 + 600, name="later")
     actions.on_button(OWNER, f"cw:approve:{a.id}")
     text = actions.windows_text()
-    assert f"{a.id} approved" in text and f"{b.id} pending" in text and later.id not in text
-    assert f"   overlaps {a.id}" in text
-    assert f"{a.id} open" in make(store, clock=lambda: NOW + 700).windows_text()
+    assert f"approved · Fri 15 Jan 08:10-09:10 UTC · k8s-prod · a · {a.id}" in text
+    assert f"· b · {b.id}" in text and "pending · " in text and later.id not in text
+    assert "   overlaps 'a' 08:10-09:10, 1 h (same scope k8s-prod; both windows are exclusive)" in text
+    assert "open · " in make(store, clock=lambda: NOW + 700).windows_text()
 
 
 def test_store_errors_other_than_state_propagate(store):

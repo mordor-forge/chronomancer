@@ -204,6 +204,30 @@ def test_buttons_change_the_store(store):
     assert "parse_mode" not in edits[0]  # plain text: agent-written names cannot become markup
 
 
+def test_conflicts_button_posts_one_block_per_conflict_and_show_posts_the_window(store):
+    async def main():
+        app, api = build_app()
+        runtime = tg.Runtime(make_actions(store))
+        runtime.bind(app)
+        await app.initialize()
+        a, b = propose(store, name="<b>a</b>"), propose(store, name="b")
+        await app.process_update(button_update(app, STRANGER, f"cw:conflicts:{b.id}", 1))
+        sent_to_stranger = len(api.named("sendMessage"))
+        await app.process_update(button_update(app, OWNER, f"cw:conflicts:{b.id}", 2))
+        await app.process_update(button_update(app, OWNER, f"cw:show:{a.id}", 3))
+        await app.shutdown()
+        return a, b, api, sent_to_stranger
+
+    a, b, api, sent_to_stranger = asyncio.run(main())
+    assert sent_to_stranger == 0  # the allow-list covers the read-only buttons too
+    block, shown = api.named("sendMessage")
+    assert block["text"].startswith("Conflict 1 of 1 for 'b'\nOther window: '<b>a</b>' (pending)")
+    assert keyboard(block) == [[f"cw:show:{a.id}"]] and "parse_mode" not in block
+    assert shown["text"].startswith("Window proposal: <b>a</b>") and "parse_mode" not in shown
+    assert keyboard(shown) == [[f"cw:approve:{a.id}", f"cw:decline:{a.id}"], [f"cw:conflicts:{a.id}"]]
+    assert int(block["chat_id"]) == OWNER and store.get(a.id).state == store.get(b.id).state == "pending"
+
+
 def test_decline_and_a_stale_button(store):
     async def main():
         app, api = build_app()
@@ -283,7 +307,7 @@ def test_windows_command_answers_approvers_only(store):
     w, api = asyncio.run(main())
     sent = api.named("sendMessage")
     assert len(sent) == 1 and int(sent[0]["chat_id"]) == OWNER
-    assert f"{w.id} pending" in sent[0]["text"]
+    assert f"web v2 · {w.id}" in sent[0]["text"]
 
 
 @pytest.mark.parametrize('chat_type', ['group', 'supergroup'])

@@ -81,6 +81,11 @@ def configure(dispatch: Optional[Callable[[str, dict], Any]]) -> None:
     _reader = CardReader(dispatch)
 
 
+def info(card: Any) -> Optional[dict[str, str]]:
+    """Details for one linked card, or None when the board cannot be read or does not know it."""
+    return _reader.info(card)
+
+
 def details(cards: Any) -> list[dict[str, str]]:
     """Details for the linked cards the board knows, in the order they are linked."""
     return [info for info in (_reader.info(card) for card in cards or []) if info]

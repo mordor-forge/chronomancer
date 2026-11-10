@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
+from . import cards as card_reader
 from . import effects as fx
 from . import overlaps
 from .store import OverlapError, Store, StoreError, Window
@@ -40,7 +41,7 @@ from .store import OverlapError, Store, StoreError, Window
 logger = logging.getLogger(__name__)
 
 CALLBACK_PATTERN = r"^cw:"  # scoped, so the core button flows keep working
-_CALLBACK_RE = re.compile(r"cw:(approve|decline|close):(W[0-9A-F]{6})")  # used with fullmatch
+_CALLBACK_RE = re.compile(r"cw:(approve|decline|close|conflicts|show):(W[0-9A-F]{6})")  # used with fullmatch
 ANNOUNCE = fx.ANNOUNCE
 ANNOUNCE_LEASE_S = fx.LEASE_S
 SCHEDULER_INTERVAL_S = 10.0
@@ -87,6 +88,8 @@ class Reply:
     alert: bool = False             # show it as a dialog, not a toast
     text: Optional[str] = None      # new message text; None leaves the message as it is
     buttons: list[list[tuple[str, str]]] = field(default_factory=list)  # rows of (label, callback data)
+    # further messages to post in the same chat, each (text, button rows): conflict explanations, a shown window
+    messages: list[tuple[str, list[list[tuple[str, str]]]]] = field(default_factory=list)
 
 
 class Actions:
@@ -134,20 +137,20 @@ class Actions:
         else:
             head = {"pending": "Window proposal", "declined": "Window declined", "cancelled": "Proposal withdrawn",
                     "closed": "Window closed"}.get(w.state, f"Window {w.state}")
-        lines = [f"{head}: {w.name}", f"{w.id} · scope {w.scope}", self.span(w),
+        lines = [f"{head}: {w.name}", f"scope {w.scope}", self.span(w),
                  "exclusive" if w.exclusive else "shared (other windows may overlap)"]
         if w.cards:
-            lines.append("Cards: " + ", ".join(c.get("task_id", "?") for c in w.cards))
+            lines.append("Cards: " + "; ".join(self._card(c) for c in w.cards))
         lines.append(f"Proposed by {w.proposed_by}")
         lines.append(f"Reason: {w.reason}")
-        if w.state in ("pending", "approved") and w.closed_at is None:
-            overlaps = self._overlaps(w)
-            if overlaps:
-                lines.append("OVERLAPS: " + ", ".join(f"{o.id} ({o.state}, {o.name})" for o in overlaps))
+        conflicts = overlaps.describe(self, w, now)
+        for fact in conflicts:
+            lines.append("Overlaps " + overlaps.line(fact))
         if w.decided_by and w.state != "pending":
             lines.append(decided_line(w))
         if w.close_reason:
             lines.append(f"Closed: {w.close_reason}")
+        lines.append(f"id {w.id}")  # for the agent and the logs; a person reads the lines above
         text = "\n".join(lines)
         if len(text) > _MAX_TEXT:
             text = text[:_MAX_TEXT] + " [...]"
@@ -156,7 +159,38 @@ class Actions:
             buttons = [[("Approve", f"cw:approve:{w.id}"), ("Decline", f"cw:decline:{w.id}")]]
         elif w.state == "approved" and w.closed_at is None and w.end_ts > now:
             buttons = [[("Close now", f"cw:close:{w.id}")]]
+        if conflicts:
+            buttons.append([(f"Conflicts ({len(conflicts)})", f"cw:conflicts:{w.id}")])
         return text, buttons
+
+    @staticmethod
+    def _card(card: dict) -> str:
+        """``'Title' (status, assignee) [id]`` when the board can be read, else the id."""
+        task_id = str(card.get("task_id", "?"))
+        info = card_reader.info(card)
+        if not info:
+            return task_id
+        extra = ", ".join(x for x in (info["status"], info["assignee"]) if x)
+        return f"'{info['title']}'" + (f" ({extra})" if extra else "") + f" [{task_id}]"
+
+    def conflict_messages(self, w: Window, now: int) -> list[tuple[str, list[list[tuple[str, str]]]]]:
+        """One explanation per window that ``w`` conflicts with, each with a Show button."""
+        conflicts = overlaps.describe(self, w, now)
+        out = []
+        for n, fact in enumerate(conflicts, 1):
+            by = f" · proposed by {fact['proposer']}" if fact["proposer"] else ""
+            text = "\n".join([
+                f"Conflict {n} of {len(conflicts)} for '{w.name}'",
+                f"Other window: '{fact['name']}' ({fact['state']})",
+                f"{fact['span']} · scope {fact['scope']}{by}",
+                f"Shared span: {fact['overlap']}, {fact['length']}",
+                f"Rule: {fact['why']}",
+                f"What it means: {fact['consequence']}",
+                f"Ways out: {fact['way_out']}",
+                f"id {fact['id']}"])
+            out.append((text if len(text) <= _MAX_TEXT else text[:_MAX_TEXT] + " [...]",
+                        [[("Show", f"cw:show:{fact['id']}")]]))
+        return out
 
     def windows_text(self) -> str:
         """``/windows``: today's and tomorrow's windows in the plugin's time zone."""
@@ -170,11 +204,9 @@ class Actions:
         lines = [f"Change windows, today and tomorrow ({today.strftime('%Z') or 'UTC'}):"]
         for w in rows:
             state = "open" if w.is_open(now) else w.state
-            lines.append(f"{w.id} {state} · {self.span(w)} · {w.scope} · {w.name}")
-            if w.state in ("pending", "approved") and w.closed_at is None:
-                overlaps = self._overlaps(w)
-                if overlaps:
-                    lines.append("   overlaps " + ", ".join(o.id for o in overlaps))
+            lines.append(f"{state} · {self.span(w)} · {w.scope} · {w.name} · {w.id}")
+            for fact in overlaps.describe(self, w, now):
+                lines.append(f"   overlaps '{fact['name']}' {fact['overlap']}, {fact['length']} ({fact['why']})")
         text = "\n".join(lines)
         return text if len(text) <= _MAX_TEXT else text[:_MAX_TEXT] + " [...]"
 
@@ -188,6 +220,18 @@ class Actions:
         action, window_id = match.groups()
         now = int(self.clock())
         by = f"telegram:{user_id}"
+        if action in ("conflicts", "show"):  # read-only, and still for approvers only (checked above)
+            shown = self.store.get(window_id)
+            if shown is None:
+                return Reply("This window no longer exists.", alert=True)
+            if action == "show":
+                return Reply("Shown below.", messages=[self.window_message(shown, now)])
+            text, buttons = self.window_message(shown, now)
+            blocks = self.conflict_messages(shown, now)
+            if not blocks:
+                return Reply("No conflict any more.", text=text, buttons=buttons)
+            return Reply(f"{len(blocks)} conflict{'s' if len(blocks) != 1 else ''} explained below.",
+                         text=text, buttons=buttons, messages=blocks)
         try:
             if action == "approve":
                 current = self.store.get(window_id)
@@ -412,7 +456,7 @@ class Runtime:
             logger.warning("change-windows: callback failed (%s)", type(exc).__name__)
             await query.answer("The window store is unavailable; retry.", show_alert=True)
             return
-        if not reply.alert:
+        if not reply.alert and not reply.messages:
             self.wake()  # an approval may make a start effect due now (late approval)
         await query.answer(reply.toast[:200], show_alert=reply.alert)
         if reply.text is not None and query.message is not None:
@@ -421,6 +465,15 @@ class Runtime:
                     query.message.chat.id if query.message.chat.type == "private" else None)))
             except Exception as exc:  # "message is not modified", or an old message: the store is right
                 logger.debug("change-windows: could not edit the message: %s", type(exc).__name__)
+        if reply.messages and query.message is not None:
+            chat = query.message.chat
+            url = self.miniapp_url(chat.id if chat.type == "private" else None)
+            for text, buttons in reply.messages:
+                try:
+                    await context.bot.send_message(chat_id=chat.id, text=text, reply_markup=_markup(buttons, url))
+                except Exception as exc:
+                    logger.warning("change-windows: could not send a conflict message (%s)", type(exc).__name__)
+                    break
 
     async def _on_windows(self, update: Any, context: Any) -> None:
         user = getattr(update, "effective_user", None)
