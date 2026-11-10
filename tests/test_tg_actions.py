@@ -135,8 +135,7 @@ def test_conflicts_button_explains_each_conflict_and_show_posts_that_window(stor
     text, buttons = reply.messages[0]
     assert text.splitlines() == [
         "Conflict 1 of 2 for 'b'",
-        "Other window: 'a' (approved)",
-        "Fri 15 Jan 08:10-09:10 UTC · scope k8s-prod · proposed by test",
+        "Other window: a · approved · Fri 15 Jan 08:10-09:10 UTC · scope k8s-prod · proposed by test",
         "Shared span: 08:10-09:10, 1 h",
         "Rule: same scope k8s-prod; both windows are exclusive",
         "What it means: Approving this window is refused while 'a' is approved.",

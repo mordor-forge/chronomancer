@@ -40,9 +40,47 @@ def test_a_conflict_names_the_other_window_the_span_the_rule_and_the_way_out(sto
     [back] = overlaps.describe(actions, store.get(argo.id), NOW)
     assert back["name"] == "web v2 rollout" and back["state"] == "pending"
     assert back["consequence"] == "Approving 'web v2 rollout' is refused while this window is approved."
-    line = overlaps.line(fact)
-    assert line.startswith("'Argo CD upgrade' (open, Tue 10 Nov 14:00-15:00 UTC, proposed by platform): overlaps 14:30-15:00")
-    assert line.endswith(f"[{argo.id}]")
+    # the wording every surface lays out: a chip, a message line, a list row, a panel, a timeline tag
+    assert fact["label"] == "Overlaps 'Argo CD upgrade' 14:30-15:00, 30 min"
+    assert fact["line"] == ("Overlaps 'Argo CD upgrade' (open, Tue 10 Nov 14:00-15:00 UTC, proposed by platform): "
+                            f"overlaps 14:30-15:00, 30 min. Why: same scope k8s-prod; both windows are exclusive. [{argo.id}]")
+    assert fact["brief"] == "overlaps 'Argo CD upgrade' 14:30-15:00, 30 min (same scope k8s-prod; both windows are exclusive)"
+    assert fact["title"] == "This window and 'Argo CD upgrade' overlap"
+    assert fact["rows"] == [
+        ["Other window", "Argo CD upgrade · open · Tue 10 Nov 14:00-15:00 UTC · scope k8s-prod · proposed by platform"],
+        ["Shared span", "14:30-15:00, 30 min"],
+        ["Rule", "same scope k8s-prod; both windows are exclusive"],
+        ["What it means", "Approving this window is refused while 'Argo CD upgrade' is approved."],
+        ["Ways out", "Decline one of them, or ask the agent to propose another time."]]
+    assert fact["pair"] == "Overlap: 'web v2 rollout' and 'Argo CD upgrade', 14:30-15:00, 30 min" and fact["note"] == "overlap 30 min"
+
+
+def test_one_function_writes_the_line_the_why_and_the_refusal(store, actions):
+    """``explain`` is the only place the wording lives: ``describe`` and ``refusal`` return its parts."""
+    from change_windows.store import OverlapError
+    a, b = propose(store, "a", 0, 3600), propose(store, "b", 1800, 5400)
+    store.decide(a.id, approve=True, by="telegram:1", now=NOW, via="telegram")
+    a, b = store.get(a.id), store.get(b.id)
+    whole = overlaps.explain(actions, b, [a], NOW)
+    assert set(whole) == {"conflicts", "refusal"}
+    assert overlaps.describe(actions, b, NOW) == whole["conflicts"]
+    assert overlaps.refusal(actions, OverlapError(b, [a]), NOW) == whole["refusal"]
+    assert whole["refusal"].startswith("Can't approve 'b': it overlaps 'a' (") and whole["refusal"].endswith(
+        ") for 30 min. Decline one of them, or ask the agent to propose another time.")
+    assert overlaps.explain(actions, b, [], NOW) == {"conflicts": [], "refusal": ""}
+    assert not hasattr(overlaps, "line") and not hasattr(overlaps, "facts")
+
+
+def test_the_surfaces_hold_no_copy_of_the_wording():
+    """Desktop, the Mini App and Telegram lay the explanation out; the sentences are in overlaps.py only."""
+    from pathlib import Path
+    root = Path(overlaps.__file__).parent
+    for path in (root / "miniapp.html", root / "tg.py", root / "miniapp.py", root / "desktop.py", root / "views.py",
+                 root.parent / "desktop" / "plugin.js"):
+        text = path.read_text()
+        for words in ("Overlaps '", "overlaps '", "Shared span", "Other window", "What it means", "Ways out", "This window and",
+                      "Can't approve", "is exclusive", "same scope"):
+            assert words not in text, (path.name, words)
 
 
 @pytest.mark.parametrize("mine,theirs,rule", [(True, False, "this window is exclusive"),

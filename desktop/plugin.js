@@ -86,8 +86,6 @@ const EN = {
     tomorrow: day => (day ? `Tomorrow · ${day}` : 'Tomorrow'),
     now: at => `now ${at}`,
     night: 'night',
-    overlap: length => `overlap ${length}`,
-    overlapLabel: (a, b, span, length) => `Overlap: ${a} and ${b}, ${span}, ${length}`,
     bar: (name, state, span, rel) => [name, state, span, rel].filter(Boolean).join(', '),
     hint: 'Focus or hover a bar to read it. Select it to jump to its card.',
     readout: parts => parts.filter(Boolean).join(' · '),
@@ -148,16 +146,7 @@ const EN = {
     days: (d, h) => (h ? `${d} d ${h} h` : `${d} d`)
   },
   overlap: {
-    chip: (name, span, length) => `Overlaps '${name}' ${span}, ${length}`,
-    chipId: id => `Overlaps ${id}`,
-    title: name => `This window and '${name}' overlap`,
-    other: 'Other window',
-    span: 'Shared span',
-    spanValue: (span, length) => `${span}, ${length}`,
-    rule: 'Rule',
-    means: 'What it means',
-    wayOut: 'Ways out',
-    otherValue: parts => parts.filter(Boolean).join(' · '),
+    // The explanation itself (label, title, rows) is written by the backend: change_windows/overlaps.py
     show: name => `Show '${name}'`,
     dismiss: 'Close explanation'
   },
@@ -611,7 +600,7 @@ function bandsOf(data, day) {
 
       if (!seen[key] && to > from) {
         seen[key] = true
-        bands.push({ key, ids: [w.id, c.id], names: [w.name, c.name], from, to, span: c.overlap, length: c.length })
+        bands.push({ key, ids: [w.id, c.id], pair: c.pair || '', note: c.note || '', from, to })
       }
     }
   }
@@ -761,10 +750,10 @@ function WideDay({ day, index, top, width, view, data }) {
     parts.push(
       el(
         'g',
-        { key: `band${band.key}`, role: 'img', 'aria-label': t('runway.overlapLabel', band.names[0], band.names[1], band.span, band.length), 'data-band': 'overlap', 'data-strong': strong ? 'yes' : 'no' },
+        { key: `band${band.key}`, role: 'img', 'aria-label': band.pair, 'data-band': 'overlap', 'data-strong': strong ? 'yes' : 'no' },
         jsx('rect', { x: x0, y: bandTop, width: bandWidth, height: bandHeight, style: { fill: C.hatchWarn, fillOpacity: strong ? 1 : 0.7, stroke: C.secondary, strokeWidth: strong ? 2 : 1, strokeDasharray: strong ? undefined : '3 3' } }),
         jsx('line', { x1: x0, x2: x0, y1: bandTop + bandHeight, y2: trackTop + trackHeight - 14, style: { stroke: C.secondary, strokeDasharray: '2 2' } }),
-        text({ x: right ? x0 + bandWidth : x0, y: trackTop + trackHeight - 5, textAnchor: right ? 'end' : 'start', style: svgText(10, 'primary', { fontWeight: 600 }) }, `⚠ ${t('runway.overlap', band.length)}`)
+        text({ x: right ? x0 + bandWidth : x0, y: trackTop + trackHeight - 5, textAnchor: right ? 'end' : 'start', style: svgText(10, 'primary', { fontWeight: 600 }) }, `⚠ ${band.note}`)
       )
     )
   }
@@ -847,9 +836,9 @@ function LadderDay({ day, index, top, width, view, data }) {
     parts.push(
       el(
         'g',
-        { key: `band${band.key}`, role: 'img', 'aria-label': t('runway.overlapLabel', band.names[0], band.names[1], band.span, band.length), 'data-band': 'overlap', 'data-strong': strong ? 'yes' : 'no' },
+        { key: `band${band.key}`, role: 'img', 'aria-label': band.pair, 'data-band': 'overlap', 'data-strong': strong ? 'yes' : 'no' },
         jsx('rect', { x: TIME_COL + 2, y: y0, width: labelX - TIME_COL - 5, height: Math.max(4, y(band.to) - y0), style: { fill: C.hatchWarn, fillOpacity: strong ? 1 : 0.7, stroke: C.secondary, strokeWidth: strong ? 2 : 1, strokeDasharray: strong ? undefined : '3 3' } }),
-        text({ x: width - 4, y: y0 + 11, textAnchor: 'end', style: svgText(10, 'primary', { fontWeight: 600 }) }, `⚠ ${t('runway.overlap', band.length)}`)
+        text({ x: width - 4, y: y0 + 11, textAnchor: 'end', style: svgText(10, 'primary', { fontWeight: 600 }) }, `⚠ ${band.note}`)
       )
     )
   }
@@ -1050,39 +1039,27 @@ function OverlapChips({ w, view }) {
           onClick: () => view.explain(w, c)
         },
         jsx(Codicon, { name: 'warning', size: 12 }),
-        jsx('span', { children: c.name ? t('overlap.chip', c.name, c.overlap, c.length) : t('overlap.chipId', c.id) })
+        jsx('span', { children: c.label || c.id })
       )
     )
   })
 }
 
-/** Why two windows conflict, what follows, and the ways out. Shown on the card it was opened to. */
+/** Why two windows conflict, what follows, and the ways out. Shown on the card it was opened to.
+ *  The title and the rows are the backend's words (overlaps.explain); this only lays them out. */
 function ConflictPanel({ w, c, view }) {
   const t = usePluginI18n(ID)
-  const row = (label, value) => [jsx('dt', { style: S.term, children: label }, `${label}t`), jsx('dd', { style: S.fact, children: value }, `${label}d`)]
 
   return el(
     'section',
-    { style: S.panel, role: 'region', 'aria-label': t('overlap.title', c.name), 'data-conflict': `${w.id}:${c.id}` },
-    el('h3', { style: S.panelTitle }, jsx(Codicon, { name: 'warning', size: 14 }), jsx('span', { children: t('overlap.title', c.name) })),
+    { style: S.panel, role: 'region', 'aria-label': c.title, 'data-conflict': `${w.id}:${c.id}` },
+    el('h3', { style: S.panelTitle }, jsx(Codicon, { name: 'warning', size: 14 }), jsx('span', { children: c.title })),
     jsx('dl', {
       style: S.facts,
-      children: [
-        ...row(
-          t('overlap.other'),
-          el(
-            'span',
-            {},
-            t('overlap.otherValue', [c.name, t(`state.${c.state}`), c.span, t('scope', c.scope), c.proposer ? t('proposedBy', c.proposer) : '']),
-            ' ',
-            jsx('span', { style: S.id, children: c.id })
-          )
-        ),
-        ...row(t('overlap.span'), t('overlap.spanValue', c.overlap, c.length)),
-        ...row(t('overlap.rule'), c.why),
-        ...row(t('overlap.means'), c.consequence),
-        ...row(t('overlap.wayOut'), c.way_out)
-      ]
+      children: (c.rows || []).flatMap(([label, value], index) => [
+        jsx('dt', { style: S.term, children: label }, `${index}t`),
+        jsx('dd', { style: S.fact, children: index ? value : el('span', {}, value, ' ', jsx('span', { style: S.id, children: c.id })) }, `${index}d`)
+      ])
     }),
     el(
       'div',

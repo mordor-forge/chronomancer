@@ -145,7 +145,7 @@ class Actions:
         lines.append(f"Reason: {w.reason}")
         conflicts = overlaps.describe(self, w, now)
         for fact in conflicts:
-            lines.append("Overlaps " + overlaps.line(fact))
+            lines.append(fact["line"])
         if w.decided_by and w.state != "pending":
             lines.append(decided_line(w))
         if w.close_reason:
@@ -178,16 +178,9 @@ class Actions:
         conflicts = overlaps.describe(self, w, now)
         out = []
         for n, fact in enumerate(conflicts, 1):
-            by = f" · proposed by {fact['proposer']}" if fact["proposer"] else ""
-            text = "\n".join([
-                f"Conflict {n} of {len(conflicts)} for '{w.name}'",
-                f"Other window: '{fact['name']}' ({fact['state']})",
-                f"{fact['span']} · scope {fact['scope']}{by}",
-                f"Shared span: {fact['overlap']}, {fact['length']}",
-                f"Rule: {fact['why']}",
-                f"What it means: {fact['consequence']}",
-                f"Ways out: {fact['way_out']}",
-                f"id {fact['id']}"])
+            # the wording is overlaps.explain's; this only puts it on lines
+            text = "\n".join([f"Conflict {n} of {len(conflicts)} for '{w.name}'",
+                              *(f"{label}: {value}" for label, value in fact["rows"]), f"id {fact['id']}"])
             out.append((text if len(text) <= _MAX_TEXT else text[:_MAX_TEXT] + " [...]",
                         [[("Show", f"cw:show:{fact['id']}")]]))
         return out
@@ -206,7 +199,7 @@ class Actions:
             state = "open" if w.is_open(now) else w.state
             lines.append(f"{state} · {self.span(w)} · {w.scope} · {w.name} · {w.id}")
             for fact in overlaps.describe(self, w, now):
-                lines.append(f"   overlaps '{fact['name']}' {fact['overlap']}, {fact['length']} ({fact['why']})")
+                lines.append(f"   {fact['brief']}")
         text = "\n".join(lines)
         return text if len(text) <= _MAX_TEXT else text[:_MAX_TEXT] + " [...]"
 

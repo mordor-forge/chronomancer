@@ -106,12 +106,18 @@ try {
   // "Today" starts ten hours before now, so the fixed offsets below stay inside the first day.
   const DAY0 = NOW - 10 * 3600
   const DAYS = [{ start: DAY0, end: DAY0 + 86400, label: 'Tue 10 Nov' }, { start: DAY0 + 86400, end: DAY0 + 172800, label: 'Wed 11 Nov' }]
-  const conflictWith = (id, state) => ({
+  // What change_windows/overlaps.py `explain` serves for one conflict (the page writes none of these words).
+  const conflictWith = (id, state, mine, consequence = `Approving this window is refused while 'name ${id}' is approved.`) => ({
     id, name: `name ${id}`, scope: 'k8s-prod', state, span: `span ${id}`, proposer: 'dba', exclusive: true,
     start_ts: NOW + 3600, end_ts: NOW + 7200, overlap: '11:00-12:00', length: '1 h', text: 'overlaps 11:00-12:00, 1 h',
-    why: 'same scope k8s-prod; both windows are exclusive',
-    consequence: `Approving this window is refused while 'name ${id}' is approved.`,
-    way_out: 'Decline one of them, or ask the agent to propose another time.'
+    label: `Overlaps 'name ${id}' 11:00-12:00, 1 h`,
+    why: 'same scope k8s-prod; both windows are exclusive', consequence,
+    way_out: 'Decline one of them, or ask the agent to propose another time.',
+    title: `This window and 'name ${id}' overlap`,
+    rows: [['Other window', `name ${id} · ${state} · span ${id} · scope k8s-prod · proposed by dba`], ['Shared span', '11:00-12:00, 1 h'],
+           ['Rule', 'same scope k8s-prod; both windows are exclusive'], ['What it means', consequence],
+           ['Ways out', 'Decline one of them, or ask the agent to propose another time.']],
+    pair: `Overlap: 'name ${mine}' and 'name ${id}', 11:00-12:00, 1 h`, note: 'overlap 1 h'
   })
   const win = (id, extra) => ({
     id, name: `name ${id}`, scope: 'k8s-prod', start_ts: NOW + 3630, end_ts: NOW + 7230, exclusive: true, presence: false,
@@ -122,12 +128,11 @@ try {
   const DATA = {
     now: NOW, approval: true, mode: 'enforce', start: DAY0, days: DAYS, zone: 'UTC',
     windows: [
-      win('WAAAAA1', { overlaps: ['WAAAAA2'], conflicts: [conflictWith('WAAAAA2', 'approved')],
+      win('WAAAAA1', { overlaps: ['WAAAAA2'], conflicts: [conflictWith('WAAAAA2', 'approved', 'WAAAAA1')],
                        cards: [{ task_id: 't_pending', board: '' }],
                        card_details: [{ task_id: 't_pending', title: '<b>Upgrade Postgres</b>', status: 'blocked', assignee: 'dba' }] }),
       win('WAAAAA2', { state: 'approved', decided_via: 'telegram', decided_at: NOW - 3000, decided_when: 'Tue 10 Nov 09:10',
-                       overlaps: ['WAAAAA1'], conflicts: [{ ...conflictWith('WAAAAA1', 'pending'),
-                         consequence: "Approving 'name WAAAAA1' is refused while this window is approved." }],
+                       overlaps: ['WAAAAA1'], conflicts: [conflictWith('WAAAAA1', 'pending', 'WAAAAA2', "Approving 'name WAAAAA1' is refused while this window is approved.")],
                        cards: [{ task_id: 't_next', board: '' }, { task_id: 't_both', board: '' }] }),
       win('WAAAAA3', { state: 'approved', decided_via: 'desktop', decided_at: NOW - 900, decided_when: 'Tue 10 Nov 09:45',
                        open: true, scope: 'infra', start_ts: NOW - 600, end_ts: NOW + 2550, starts: 'Tue 10 Nov 09:50',

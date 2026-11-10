@@ -264,23 +264,21 @@ function mark(ids) {
 }
 function overlapButtons(w, parent) {
   for (const c of w.conflicts || []) {
-    const button = node('button', `⚠ Overlaps '${c.name}' ${c.overlap}, ${c.length}`, 'badge');
+    const button = node('button', `⚠ ${c.label}`, 'badge');  // the wording is the server's
     button.dataset.overlap = c.id;
     button.onclick = () => openConflict(w, c);
     parent.append(button);
   }
 }
+// The explanation is written once, on the server (overlaps.explain): this only lays it out.
 function explain(w) {
   const box = $('detail-explain'); box.replaceChildren();
   const fact = origin && ((w.conflicts || []).find(c => c.id === origin.id));
-  box.hidden = !origin;
-  if (!origin) return;
-  box.append(node('h3', `⚠ This window and '${origin.name}' overlap`));
+  box.hidden = !fact;
+  if (!fact) return;
+  box.append(node('h3', `⚠ ${fact.title}`));
   const list = document.createElement('dl');
-  const rows = fact ? [['Other window', `${origin.name} · ${stateWord(origin)} · ${origin.span} · scope ${origin.scope} · proposed by ${origin.proposer}`],
-    ['Shared span', `${fact.overlap}, ${fact.length}`], ['Rule', fact.why], ['What it means', fact.consequence], ['Ways out', fact.way_out]]
-    : [['Now', 'These two windows no longer conflict.']];
-  for (const [term, text] of rows) list.append(node('dt', term), node('dd', text));
+  for (const [term, text] of fact.rows) list.append(node('dt', term), node('dd', text));
   box.append(list);
 }
 function show(w) {

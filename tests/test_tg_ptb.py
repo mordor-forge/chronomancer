@@ -221,7 +221,7 @@ def test_conflicts_button_posts_one_block_per_conflict_and_show_posts_the_window
     a, b, api, sent_to_stranger = asyncio.run(main())
     assert sent_to_stranger == 0  # the allow-list covers the read-only buttons too
     block, shown = api.named("sendMessage")
-    assert block["text"].startswith("Conflict 1 of 1 for 'b'\nOther window: '<b>a</b>' (pending)")
+    assert block["text"].startswith("Conflict 1 of 1 for 'b'\nOther window: <b>a</b> · pending · ")
     assert keyboard(block) == [[f"cw:show:{a.id}"]] and "parse_mode" not in block
     assert shown["text"].startswith("Window proposal: <b>a</b>") and "parse_mode" not in shown
     assert keyboard(shown) == [[f"cw:approve:{a.id}", f"cw:decline:{a.id}"], [f"cw:conflicts:{a.id}"]]

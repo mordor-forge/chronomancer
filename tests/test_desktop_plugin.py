@@ -136,7 +136,7 @@ def test_the_runway_draws_today_and_tomorrow_with_bars_bands_night_and_a_needle(
         "WAAAAA1": "pending", "WAAAAA2": "approved", "WAAAAA3": "open", "WAAAAA6": "past", "WAAAAA7": "approved"}
     # declined and expired proposals never were windows: no bar
     assert "WAAAAA4" not in bars and "WAAAAA5" not in bars
-    assert runway["bands"] == [{"label": "Overlap: name WAAAAA1 and name WAAAAA2, 11:00-12:00, 1 h", "strong": "no",
+    assert runway["bands"] == [{"label": "Overlap: 'name WAAAAA1' and 'name WAAAAA2', 11:00-12:00, 1 h", "strong": "no",
                                 "text": ["⚠ overlap 1 h"]}]
     assert runway["night"] == 4 and runway["needle"] == ["10:00"]  # the needle is on today only
     assert runway["patterns"] == ["cw-hatch", "cw-hatch-warn"]  # proposals and overlaps are hatched, not only coloured
@@ -206,7 +206,7 @@ def test_an_overlap_is_a_sentence_on_a_button_that_opens_the_conflict_on_the_oth
     assert panel["on"] == "WAAAAA2:WAAAAA1" and panel["role"] == "region"  # on the OTHER window's card
     assert panel["title"] == "This window and 'name WAAAAA1' overlap"
     assert panel["rows"] == [
-        ["Other window", "name WAAAAA1 · pending · span WAAAAA1 · scope k8s-prod · Proposed by dba WAAAAA1"],
+        ["Other window", "name WAAAAA1 · pending · span WAAAAA1 · scope k8s-prod · proposed by dba WAAAAA1"],
         ["Shared span", "11:00-12:00, 1 h"],
         ["Rule", "same scope k8s-prod; both windows are exclusive"],
         ["What it means", "Approving 'name WAAAAA1' is refused while this window is approved."],
@@ -251,7 +251,7 @@ def test_an_older_backend_still_gets_the_door_the_cards_and_the_actions(ran):
     old = ran["oldBackend"]
     assert old["runway"] is None  # no day boundaries: no timeline, and no crash
     assert old["door"]["lines"][0].startswith("Open: name WAAAAA3, ")
-    assert old["chips"] == ["warningOverlaps WAAAAA2", "warningOverlaps WAAAAA1"] and old["buttons"] == 5
+    assert old["chips"] == ["warningWAAAAA2", "warningWAAAAA1"] and old["buttons"] == 5
 
 
 def test_approval_off_hides_approve_and_decline_but_keeps_close(ran):
@@ -318,3 +318,12 @@ def test_longest_badge_labels_fit_the_24_character_limit():
         assert len(template.format("Wed 11 Nov 09:00")) <= 24
     labels = re.search(r"badge: \{(.*?)\n  \}", SOURCE, flags=re.S).group(1)
     assert "window open, ${d}" in labels and "next ${at}" in labels and "pending ${at}" in labels
+
+
+def test_the_conflict_wording_is_the_backends_not_the_pages():
+    """One copy of the explanation: change_windows/overlaps.py. The page lays out label, title, rows, pair, note."""
+    code = _code()
+    for words in ("Overlaps '", "Shared span", "Other window", "What it means", "Ways out", "This window and", "Overlap:"):
+        assert words not in code, words
+    for field in ("c.label", "c.title", "c.rows", "c.pair", "c.note"):
+        assert field in code, field
