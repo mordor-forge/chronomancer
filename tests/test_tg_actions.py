@@ -96,7 +96,7 @@ def test_approval_refuses_an_overlap_with_an_approved_window(store):
     actions = make(store)
     actions.on_button(OWNER, f"cw:approve:{a.id}")
     reply = actions.on_button(OWNER, f"cw:approve:{b.id}")
-    assert reply.alert and "overlaps approved" in reply.toast
+    assert reply.alert and reply.toast.startswith("Can't approve 'b': it overlaps 'a' (approved, ")
     assert store.get(b.id).state == "pending"
     assert f"OVERLAPS: {a.id} (approved, a)" in reply.text
 

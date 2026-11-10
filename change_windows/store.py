@@ -119,6 +119,16 @@ class StoreError(RuntimeError):
     """A store operation the caller asked for cannot be done (unknown id, wrong state)."""
 
 
+class OverlapError(StoreError):
+    """An approval is refused: the window overlaps approved windows in its scope. The message
+    names ids (agents and logs); ``overlaps.refusal`` writes the sentence an owner reads."""
+
+    def __init__(self, window: "Window", clashes: "list[Window]"):
+        super().__init__(f"window {window.id} overlaps approved {', '.join(w.id for w in clashes)}")
+        self.window = window
+        self.clashes = clashes
+
+
 def _row_to_window(row: sqlite3.Row | tuple, cols: list[str]) -> Window:
     d = dict(zip(cols, row))
     d["exclusive"] = bool(d["exclusive"])
@@ -289,7 +299,7 @@ class Store:
                       "AND start_ts < ? AND end_ts > ? AND id != ?",
                 (window.scope, window.end_ts, window.start_ts, window.id)) if window.exclusive or w.exclusive]
             if clash:
-                raise StoreError(f"window {window_id} overlaps approved {', '.join(w.id for w in clash)}")
+                raise OverlapError(window, clash)
         conn.execute("UPDATE windows SET state = ?, decided_by = ?, decided_at = ?, decided_via = ? WHERE id = ?",
                      ("approved" if approve else "declined", by, now, via, window_id))
         if approve:

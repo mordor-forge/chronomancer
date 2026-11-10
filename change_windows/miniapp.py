@@ -17,7 +17,8 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from .initdata import InitDataError, verify_ed25519
-from .store import StoreError
+from . import overlaps
+from .store import OverlapError, StoreError
 from .views import IDEMPOTENCY_KEY, audit_view, list_view, snapshot_view, window_view
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,8 @@ def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable
             result = await asyncio.to_thread(actions.store.api_action, request[user_key], key,
                                              request.match_info["window_id"], request.match_info["action"],
                                              int(actions.clock()))
+        except OverlapError as exc:
+            raise web.HTTPConflict(text=overlaps.refusal(actions, exc, int(actions.clock())))
         except StoreError as exc:
             raise web.HTTPConflict(text=str(exc))
         wake()

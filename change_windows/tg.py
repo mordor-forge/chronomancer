@@ -34,7 +34,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from . import effects as fx
-from .store import Store, StoreError, Window
+from . import overlaps
+from .store import OverlapError, Store, StoreError, Window
 
 logger = logging.getLogger(__name__)
 
@@ -201,11 +202,12 @@ class Actions:
                 window = self.store.close(window_id, by=by, reason="closed from Telegram", now=now)
                 toast = "Closed. Matched calls are blocked again." if window.state == "closed" else "Withdrawn."
         except StoreError as exc:
+            reason = overlaps.refusal(self, exc, now) if isinstance(exc, OverlapError) else str(exc)
             current = self.store.get(window_id)
             if current is None:
-                return Reply(str(exc)[:200], alert=True)
+                return Reply(reason[:200], alert=True)
             text, buttons = self.window_message(current, now)
-            return Reply(str(exc)[:200], alert=True, text=text, buttons=buttons)
+            return Reply(reason[:200], alert=True, text=text, buttons=buttons)
         text, buttons = self.window_message(window, now)
         return Reply(toast, text=text, buttons=buttons)
 

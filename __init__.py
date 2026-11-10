@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Any
 
-from .change_windows import guard, rules, tg, tools
+from .change_windows import cards, guard, rules, tg, tools
 from .change_windows.store import Store
 from .change_windows.timezones import local_tz
 
@@ -91,6 +91,9 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_tool_call", guard.make_hook(
         get_rules=rule_cache.get, get_mode=mode, store=store, tz=tz,
         command_preview=lambda: setting("audit_command_preview", False) is True))
+
+    # Linked cards get their titles on the owner surfaces through the kanban tools.
+    cards.configure(lambda tool, args: ctx.dispatch_tool(tool, args))
 
     # Telegram: needs the native Application, so in-process plugins only. Under
     # plugins.isolation: host (or on a core without the seam) the guard and the tools still work.

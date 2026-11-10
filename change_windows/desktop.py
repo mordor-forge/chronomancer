@@ -15,7 +15,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from .store import StoreError
+from . import overlaps
+from .store import OverlapError, StoreError
 from .views import ACTIONS, IDEMPOTENCY_KEY, WINDOW_ID, audit_view, decisions_view, list_view, snapshot_view
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,8 @@ class DesktopApi:
         try:
             result = store.api_action(KEY_OWNER, key, window_id, action, int(self.actions.clock()),
                                       channel=CHANNEL, by=ACTOR)
+        except OverlapError as exc:
+            return _error(409, overlaps.refusal(self.actions, exc, int(self.actions.clock())))
         except StoreError as exc:
             return _error(409, str(exc))
         try:

@@ -193,7 +193,9 @@ def test_a_proposal_that_overlaps_an_approved_exclusive_window_cannot_be_approve
     first, second = env.propose(), env.propose(name="b", start=1200, end=1800, exclusive=False)
     assert env.post(first.id, "approve").status_code == 200
     response = env.post(second.id, "approve", key=KEY + "b")
-    assert response.status_code == 409 and f"overlaps approved {first.id}" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert response.status_code == 409 and detail.startswith("Can't approve 'b': it overlaps 'web v2' (approved, ")
+    assert "k8s-prod) for 10 min. Decline one of them" in detail and first.id not in detail
     assert env.store.get(second.id).state == "pending"
     assert env.post(second.id, "decline", key=KEY + "c").status_code == 200
 

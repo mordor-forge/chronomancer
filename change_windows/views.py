@@ -9,6 +9,9 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from . import cards as card_reader
+from . import overlaps
+
 IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9_-]{16,128}")
 WINDOW_ID = re.compile(r"W[0-9A-F]{6}")
 ACTIONS = ("approve", "decline", "close")
@@ -22,8 +25,16 @@ def window_view(actions: Any, window: Any, now: int) -> dict[str, Any]:
     data = {k: getattr(window, k) for k in WINDOW_FIELDS}
     data["open"] = window.is_open(now)
     data["span"] = actions.span(window)
-    data["overlaps"] = [w.id for w in actions._overlaps(window)] if (
-        window.state in ("pending", "approved") and window.closed_at is None) else []
+    # What a person needs to trace an overlap (the other window's name, the shared span, the rule);
+    # ``overlaps`` keeps the bare ids.
+    data["conflicts"] = overlaps.describe(actions, window, now)
+    data["overlaps"] = [c["id"] for c in data["conflicts"]]
+    data["proposer"] = overlaps.proposer(window.proposed_by)  # the agent profile, not a person
+    data["starts"] = actions.fmt(window.start_ts)
+    data["decided_at"] = window.decided_at
+    data["decided_when"] = actions.fmt(window.decided_at) if window.decided_at else ""
+    data["closed_when"] = actions.fmt(window.closed_at) if window.closed_at else ""
+    data["card_details"] = card_reader.details(window.cards)
     return data
 
 
@@ -40,7 +51,11 @@ def list_view(actions: Any) -> dict[str, Any]:
         hour=0, minute=0, second=0, microsecond=0)
     start, end = int(today.timestamp()), int((today + timedelta(days=8)).timestamp())
     rows = actions.store.list_windows(start, end, states=_LISTED_STATES)
-    return {"now": now, "start": start, "end": end, "windows": [window_view(actions, w, now) for w in rows]}
+    # Today and tomorrow, midnight to midnight in the plugin's zone: what the timeline draws.
+    days = [{"start": int((today + timedelta(days=i)).timestamp()), "end": int((today + timedelta(days=i + 1)).timestamp()),
+             "label": (today + timedelta(days=i)).strftime("%a %d %b")} for i in (0, 1)]
+    return {"now": now, "start": start, "end": end, "days": days, "zone": today.strftime("%Z"),
+            "windows": [window_view(actions, w, now) for w in rows]}
 
 
 def audit_view(store: Any, limit: int = 20) -> list[dict[str, Any]]:

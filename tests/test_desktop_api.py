@@ -55,6 +55,7 @@ def test_list_returns_display_fields_overlaps_cards_and_the_approval_flag(h):
     assert rows[a.id]["open"] is False and "UTC" in rows[a.id]["span"]
     # explicit projection: identities and close reasons stay in the store
     assert not {"proposed_by", "decided_by", "close_reason", "created_at"} & set(rows[a.id])
+    assert rows[a.id]["proposer"] == "test"  # the agent profile is shown; the raw actor string is not
     json.dumps(body)
 
 
@@ -196,8 +197,8 @@ def _withdrawn(h):
 
 @pytest.mark.parametrize("scenario,fragment", [
     (_expired, "has already ended; ask for a new one"),
-    (_overlap_exclusive, "overlaps approved"),
-    (_overlap_shared_against_exclusive, "overlaps approved"),
+    (_overlap_exclusive, "it overlaps 'web v2' (approved, "),
+    (_overlap_shared_against_exclusive, "it overlaps 'web v2' (approved, "),
     (_already_declined, "is declined, not pending"),
     (_withdrawn, "is cancelled, not pending"),
 ])
@@ -212,9 +213,8 @@ def test_approve_is_refused_exactly_where_the_telegram_button_refuses(tmp_path, 
     reply = via_telegram.actions.on_button(OWNER, f"cw:approve:{t.id}")
     assert status == 409 and reply.alert
     assert fragment in body["detail"]
-    # the same message, apart from the window ids
-    assert body["detail"].replace(d.id, "W").split(" overlaps approved ")[0] == \
-        reply.toast.replace(t.id, "W").split(" overlaps approved ")[0]
+    # the same message, apart from the window ids (Telegram cuts an alert at 200 characters)
+    assert body["detail"].replace(d.id, "W")[:200] == reply.toast.replace(t.id, "W")
     assert via_desktop.store.get(d.id) == before
     assert via_desktop.store.get(d.id).state == via_telegram.store.get(t.id).state
     assert all(e[0] != d.id for e in via_desktop.store.claim_due_effects(NOW + 99999, kinds=("start", "end")))
