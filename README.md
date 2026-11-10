@@ -1,23 +1,28 @@
 # change-windows
 
-Approved time windows for production changes made by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
+An agent that can run `kubectl apply` at 03:00 will, sooner or later, do it at 03:00, and a rule
+in a prompt is advice the model can forget. `change-windows` is a
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that blocks production writes
+in a `pre_tool_call` hook unless the owner approved a time window for that scope.
 
-> Status: **first release** (0.1.0). The guard, the four agent tools and the Telegram buttons,
-> card release, start/end notices, Mini App and Hermes Desktop half are implemented. `hermes plugins doctor` and
-> `validate` pass on Hermes v0.23.0. Local tests include real HTTP requests and a phone-sized
-> Chromium flow. The real Telegram phone/HTTPS check was waived
-> by the owner, not passed; browser tests use synthetic Telegram signatures. Real phone, HTTPS
-> routing and Telegram-signed initData remain unverified. The Desktop half is tested against
-> stand-ins for the Desktop SDK and over HTTP against its backend routes, and was run once in an
-> isolated Hermes Desktop on Linux with synthetic data (see Limits for what that run covered).
+![The Change windows page in Hermes Desktop: the door says which window is open and for how long, the runway shows today and tomorrow with two overlapping proposals, and the first window card carries its approval stamp.](docs/desktop-page.png)
 
-## Why
+*Hermes Desktop, default theme, synthetic data from an isolated lab.*
 
-An agent that can run `kubectl apply` at 03:00 will, sooner or later, do it at 03:00. A rule in a
-prompt or a skill is advice the model can forget. `change-windows` enforces the rule in a
-`pre_tool_call` hook: a production write runs only inside a window the owner approved for its
-scope. Outside a window the call is blocked, and the model is told which window comes next and
-how to ask for one.
+What it does not do:
+
+- **A seatbelt, not a sandbox.** Text rules catch honest commands. A hidden command (variables,
+  encodings, a script file) gets past a regular expression.
+- **Only the commands the rules name.** 13 default rules for `kubectl`, `helm`, Argo CD,
+  `tofu`/`terraform`/`pulumi`, `git push` and PR merges. Not an alias, not `make deploy`.
+- **Only calls through Hermes tool dispatch.** Not `no_agent` cron scripts, shell hooks or what a
+  person types in a terminal.
+- **Approvals need a person.** No agent tool can approve. Telegram and Mini App approvals are
+  signed by Telegram; a Desktop approval trusts the Desktop session.
+- **Not verified on a real phone.** The Mini App is tested in Chromium with synthetic Telegram
+  signatures.
+
+The full list is in [Limits](#limits-read-before-you-rely-on-it).
 
 ## Install
 
@@ -43,6 +48,20 @@ plugins:
 
 Needs Hermes 0.22.7 or later. The guard and the agent tools work at once; approvals need the
 gateway connected to Telegram (see [Limits](#limits-read-before-you-rely-on-it)).
+
+## Status
+
+> Status: **first release** (0.1.0). The guard, the four agent tools and the Telegram buttons,
+> card release, start/end notices, Mini App and Hermes Desktop half are implemented. `hermes plugins doctor` and
+> `validate` pass on Hermes v0.23.0. Local tests include real HTTP requests and a phone-sized
+> Chromium flow. The real Telegram phone/HTTPS check was waived
+> by the owner, not passed; browser tests use synthetic Telegram signatures. Real phone, HTTPS
+> routing and Telegram-signed initData remain unverified. The Desktop half is tested against
+> stand-ins for the Desktop SDK and over HTTP against its backend routes, and was run once in an
+> isolated Hermes Desktop on Linux with synthetic data (see Limits for what that run covered).
+
+Outside a window the call is blocked, and the model is told which window comes next and how to ask
+for one.
 
 ## How it works
 
@@ -90,7 +109,15 @@ When the gateway connects to Telegram, the plugin adds its own buttons and one c
 gateway's bot. It needs no bot token of its own.
 
 - **Proposal message.** Each new proposal goes to the owner chat: name, scope, time, reason,
-  linked cards, overlaps, and the buttons **Approve** and **Decline**. Proposals from any process
+  linked cards (title, status and assignee when the board can be read), one line per overlap, and
+  the buttons **Approve** and **Decline**. The window id is the last line.
+- **Overlaps.** An overlap line names the other window, its state, time and proposer, the shared
+  span ("overlaps 14:00-14:30, 30 min") and the rule ("same scope k8s-prod; both windows are
+  exclusive"). A **Conflicts (n)** button sends one explanation per conflicting window: shared
+  span, rule, what it means, ways out. Each has a **Show** button that posts that window's own
+  message with its own buttons. A refused approval says why: "Can't approve 'web v2 rollout': it
+  overlaps 'Argo CD upgrade' (approved, 14:00-15:00, k8s-prod) for 30 min. Decline one of them,
+  or ask the agent to propose another time." Proposals from any process
   of the profile (gateway chat, CLI chat, Kanban workers) are queued in the plugin database; the
   gateway sends them within about 10 seconds (at once when the proposal comes from the gateway).
 - **Close now.** An approved window's message has a **Close now** button. Matched calls are
@@ -104,7 +131,7 @@ gateway's bot. It needs no bot token of its own.
   Undeliverable failure reports retry after 10 seconds, doubling up to one hour, and log at
   WARNING on every failed delivery (including at the cap). This report backoff is per process
   and resets on restart; successful delivery finishes the effect.
-- **`/windows`.** Today's and tomorrow's windows, with overlaps, in private chats only. In a
+- **`/windows`.** Today's and tomorrow's windows, with overlaps in the same words, in private chats only. In a
   group, approvers receive only an instruction to use a private chat. With a Mini App URL configured,
   proposal messages and `/windows` include **Open list** in private chats. No bot menu, commands
   list or webhook is changed by the plugin.
@@ -117,9 +144,14 @@ gateway's bot. It needs no bot token of its own.
 
 Set `miniapp_url` to your HTTPS URL and proxy it to `127.0.0.1:18782` (or your configured loopback
 host/port). There is no hosted service: you publish HTTPS yourself. Open **Open list** in a private
-chat with the bot. The page uses Telegram's theme, shows today plus seven calendar days, flags
-exclusive overlaps in red, and offers Approve / Decline / Close and the last 20 audit rows. Names
-and reasons render as text. Command previews and session/task ids are never sent to this page.
+chat with the bot. The page uses Telegram's theme colours only. On top is the door: one sentence
+("Open: Ingress controller rollout, 40 min left", "Closed: production writes are blocked") with a
+lock glyph, then a compact timeline of today and tomorrow (approved bars solid, proposals hatched,
+overlaps crossed, night shaded, a "now" needle). Below: today plus seven calendar days, Approve /
+Decline / Close, and the last 20 audit rows. An overlap is a button with a sentence; it opens the
+other window's sheet with the shared span, the rule, what it means and the ways out, and **Back**
+returns. Names, reasons and card titles render as text. The page re-reads every 30 seconds while
+it is visible. Command previews and session/task ids are never sent to this page.
 
 Every API request verifies Telegram's Ed25519 signature and the current approver allow-list.
 Read sessions last one hour; decisions require initData no older than ten minutes. Reopen the
@@ -146,25 +178,40 @@ machine the Desktop app runs on, enable it for the profile (`hermes plugins enab
 which also lets the backend routes load), restart the gateway, and turn the Desktop half on under
 **Capabilities → Plugins** (Desktop halves are off until you do). What appears:
 
-- **Page and sidebar row "Change windows".** Windows from today to seven days ahead, grouped as
-  waiting for your decision, approved, open now, and closed/expired/declined. Each shows scope,
-  time, reason, overlap warnings, linked cards and the channel it was decided in. Below: recent
-  decisions with their channel, and the last 20 matched calls (metadata only; command previews
-  and session/task ids are never sent to this page).
+- **Page and sidebar row "Change windows".** Four parts, top to bottom:
+  - *The door.* One sentence with a lock glyph: "Open: Ingress controller rollout, 42 min left",
+    "Closed: production writes are blocked" with the next approved window, or "Warn mode" / "Guard
+    off" when the guard does not block.
+  - *The runway.* Today and tomorrow in the plugin's time zone. Approved bars are solid, proposals
+    hatched, an overlap is a hatched band, night is shaded, a needle marks now. Bars are keyboard
+    buttons: focus or hover reads one out, Enter or a click jumps to its card. In a narrow window
+    the runway is a vertical ladder.
+  - *Window cards*, grouped as open now, waiting for your decision, approved, and
+    closed/expired/declined. Each shows scope, time, reason, proposer, linked cards (title, status
+    and assignee, read through the `kanban_show` tool), a decision stamp ("Approved in Telegram,
+    13:58") and the id with a copy button.
+  - *The ledger.* Decisions and the last 20 matched calls in one log (metadata only; command
+    previews and session/task ids are never sent to this page).
+- **Overlaps.** An overlap is a button with a sentence ("Overlaps 'Index rebuild on orders'
+  17:28-17:58, 30 min"). It moves to the other window's card, marks both bars and the shared span
+  on the runway, and opens a panel with the rule, what it means and the ways out. A linked card
+  chip opens the Kanban board; the SDK has no route to one card.
 - **Actions.** Approve and Decline on a pending window, Close now on an approved or open one.
   Each asks for confirmation first and sends one idempotency key per dialog, so a retry cannot
   apply twice. The rules are the Telegram ones: a proposal that has ended, or that overlaps an
   approved exclusive window, is refused with the same message.
-- **Status-bar chip.** The open window and its time left; else the next approved window; else
-  nothing. Click it to open the page.
+- **Status-bar chip.** The door in two words: "open, 42 min", "next 14:00" or "closed". Click it to
+  open the page.
 - **Kanban card badges.** A card linked to a window shows the window's state and time
-  (for example "Open · 42 min left", "Window in 2 h"). The board is Desktop's bundled Kanban
+  (for example "window open, 42 min", "next 14:00", "pending 14:00"). The board is Desktop's bundled Kanban
   plugin, which is also off until you turn it on under **Capabilities → Plugins**.
 - **Palette command** "Open change windows".
 
-On a wide window the page is a table. When Desktop reports a narrow viewport
-(`host.state.viewport.narrow`) it becomes stacked cards with large buttons, like the Mini App.
-The page polls every 7 seconds and uses no socket.
+When Desktop reports a narrow viewport (`host.state.viewport.narrow`), or the content column is
+under 560 px, the runway becomes the ladder and the cards stack. Colours are the app's theme
+variables only; all text uses the primary text tone, which measured at 6.05:1 or more in the six
+theme modes checked (Nous, Catppuccin Latte and Mocha, Mono dark, Cyberpunk dark). The page polls
+every 7 seconds and uses no socket.
 
 **Trust.** Telegram and Mini App approvals are signed by Telegram. A Desktop approval is not: the
 routes sit behind Hermes's own authentication (the Desktop session, or a signed-in dashboard
