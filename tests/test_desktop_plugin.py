@@ -109,6 +109,25 @@ def test_wide_layout_is_a_table_grouped_by_state(ran):
     assert [b["label"] for b in wide["buttons"]] == ["Approve", "Decline", "Close now", "Close now"]
 
 
+def test_recent_decisions_name_the_decision_and_use_the_backends_moments(ran):
+    """Found in the real app: a window approved in Telegram and closed later read "closed in Telegram",
+    and the moments were in the app's zone while the spans were in the plugin's."""
+    texts = ran["wide"]["texts"]
+    assert "Tue 10 Nov 13:45 UTC · approved in Hermes Desktop · by desktop" in texts
+    assert "Tue 10 Nov 11:30 UTC · approved in Telegram · by telegram:100200300 · closed later" in texts
+    assert not any("closed in Telegram" in t for t in texts)
+    declined = [t for t in texts if "declined in the Mini App · by telegram:100200300" in t]
+    assert len(declined) == 1 and "closed later" not in declined[0]  # no `when` from an older backend: local clock
+
+
+def test_group_tables_share_one_column_grid(ran):
+    """Found in the real app: each group's table sized its own columns, so they did not line up."""
+    tables = ran["tables"]
+    assert len(tables) == 4 and all(t["layout"] == "fixed" for t in tables)
+    assert len({tuple(t["widths"]) for t in tables}) == 1
+    assert tables[0]["widths"].count("auto") == 1  # one flexible column (notes)
+
+
 def test_narrow_layout_is_stacked_cards_with_large_buttons(ran):
     narrow = ran["narrow"]
     assert "table" not in narrow["types"]

@@ -106,7 +106,11 @@ try {
   const AUDIT = {
     audit: [{ id: 1, ts: NOW - 30, verdict: 'blocked', tool: 'terminal', rule_ids: '["k8s-write"]', scopes: '["k8s-prod"]', window_id: null }],
     decisions: [{ window_id: 'WAAAAA3', name: 'name WAAAAA3', scope: 'infra', state: 'approved', decided_at: NOW - 900,
-                  decided_by: 'desktop', decided_via: 'desktop' }]
+                  decided_by: 'desktop', decided_via: 'desktop', when: 'Tue 10 Nov 13:45 UTC' },
+                { window_id: 'WAAAAA6', name: 'name WAAAAA6', scope: 'infra', state: 'closed', decided_at: NOW - 9000,
+                  decided_by: 'telegram:100200300', decided_via: 'telegram', when: 'Tue 10 Nov 11:30 UTC' },
+                { window_id: 'WAAAAA4', name: 'name WAAAAA4', scope: 'infra', state: 'declined', decided_at: NOW - 9900,
+                  decided_by: 'telegram:100200300', decided_via: 'miniapp' }]
   }
 
   // -- helpers ------------------------------------------------------------------------------
@@ -148,6 +152,9 @@ try {
 
   G.viewport = { width: 390, height: 800, narrow: true }
   out.narrow = summary(page())
+  G.viewport = { width: 1400, height: 900, narrow: false }
+  out.tables = nodes(page(), 'table').map(n => ({ layout: n.props.style.tableLayout,
+    widths: nodes(n, 'th').map(th => th.props.style.width || 'auto') }))
   G.viewport = { width: 1400, height: 900, narrow: false }
 
   setQueries({ ...DATA, approval: false, skew: 0 })

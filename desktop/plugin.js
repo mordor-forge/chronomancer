@@ -112,6 +112,7 @@ const EN = {
     callsHint: 'Last 20 · metadata only',
     noCalls: 'No matched calls recorded yet.',
     decision: (state, channel) => (channel ? `${state} in ${channel}` : state),
+    closedLater: 'closed later',
     by: who => `by ${who}`
   },
   chip: {
@@ -259,6 +260,7 @@ function parseList(value) {
   }
 }
 
+/** Fallback for a backend that sends no `when`: the app's own locale and zone. */
 const clock = ts => new Date(ts * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
 // ── styles (theme variables only) ───────────────────────────────────────────
@@ -287,7 +289,7 @@ const S = {
   reason: { fontSize: '0.8125rem', color: C.secondary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
   actions: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' },
   tableWrap: { border: `1px solid ${C.stroke}`, borderRadius: '10px', overflowX: 'auto' },
-  table: { width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' },
+  table: { width: '100%', minWidth: '52rem', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.8125rem' },
   th: { textAlign: 'left', fontWeight: 500, color: C.tertiary, padding: '0.5rem 0.75rem', borderBottom: `1px solid ${C.stroke}`, whiteSpace: 'nowrap' },
   td: { padding: '0.625rem 0.75rem', verticalAlign: 'top', borderBottom: `1px solid ${C.stroke}` },
   list: { listStyle: 'none', margin: 0, padding: 0, display: 'grid' },
@@ -374,9 +376,12 @@ function WindowCard({ w, now, approval, ask }) {
   )
 }
 
+/** Fixed widths, so the columns line up across the group tables (notes takes the rest). */
+const COLUMNS = [['state', '6.5rem'], ['window', '24%'], ['when', '19%'], ['notes', undefined], ['actions', '11.5rem']]
+
 function WindowTable({ rows, now, approval, ask }) {
   const t = usePluginI18n(ID)
-  const head = ['state', 'window', 'when', 'notes', 'actions'].map(c => jsx('th', { style: S.th, children: t(`col.${c}`) }, c))
+  const head = COLUMNS.map(([c, width]) => jsx('th', { style: { ...S.th, width }, children: t(`col.${c}`) }, c))
 
   const body = rows.map(w => {
     const p = phase(w, now)
@@ -420,12 +425,16 @@ function AuditLists({ narrow }) {
 
   const decisionItems = decisions.map(d => {
     const channel = d.decided_via && t(`via.${d.decided_via}`) !== `via.${d.decided_via}` ? t(`via.${d.decided_via}`) : ''
+    // The row is a decision. A window closed after its approval still reads "approved in …",
+    // because the channel is where it was approved, not where it was closed.
+    const verdict = t(d.state === 'declined' ? 'state.declined' : 'state.approved')
+    const later = d.state === 'closed' ? t('audit.closedLater') : ''
 
     return el(
       'li',
       { key: `${d.window_id}:${d.decided_at}`, style: S.item },
       jsx('div', { style: S.meta, children: `${d.window_id} · ${d.name}` }),
-      jsx('div', { style: S.small, children: `${clock(d.decided_at)} · ${t('audit.decision', t(`state.${d.state}`), channel)} · ${t('audit.by', d.decided_by)}` })
+      jsx('div', { style: S.small, children: [d.when || clock(d.decided_at), t('audit.decision', verdict, channel), t('audit.by', d.decided_by), later].filter(Boolean).join(' · ') })
     )
   })
 
@@ -436,7 +445,7 @@ function AuditLists({ narrow }) {
       jsx('div', { style: S.meta, children: `${row.verdict} · ${row.tool}` }),
       jsx('div', {
         style: S.small,
-        children: [clock(row.ts), parseList(row.scopes).join(', '), parseList(row.rule_ids).join(', '), row.window_id].filter(Boolean).join(' · ')
+        children: [row.when || clock(row.ts), parseList(row.scopes).join(', '), parseList(row.rule_ids).join(', '), row.window_id].filter(Boolean).join(' · ')
       })
     )
   )
