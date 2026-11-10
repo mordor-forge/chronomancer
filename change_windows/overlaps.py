@@ -21,6 +21,15 @@ def proposer(proposed_by: str) -> str:
     return text[6:] if text.startswith("agent:") else text
 
 
+def proposed(proposed_by: str) -> str:
+    """``proposed by profile 'default'``: who proposed a window, for a person. A profile named
+    "default" must not read as "by default", so an agent profile is named as one and quoted."""
+    text = str(proposed_by or "")
+    if text.startswith("agent:"):
+        return f"proposed by profile '{text[6:]}'"
+    return f"proposed by {text}" if text else ""
+
+
 def duration(seconds: int) -> str:
     minutes = max(1, round(seconds / 60))
     hours, rest = divmod(minutes, 60)
@@ -84,19 +93,19 @@ def explain(actions: Any, w: Window, others: list[Window], now: int) -> dict[str
             consequence = f"Approving '{name}' is refused while this window is approved."
         else:
             consequence = "Only one of them can be approved: after one approval, approving the other is refused."
-        proposed = f"proposed by {by}" if by else ""
+        by_whom = proposed(other.proposed_by)
         conflicts.append({
             "id": other.id, "name": other.name, "scope": other.scope, "state": state, "span": span,
             "proposer": by, "exclusive": other.exclusive,
             "start_ts": start, "end_ts": end, "overlap": overlap, "length": length,
             "text": f"overlaps {overlap}, {length}",
             "label": f"Overlaps '{name}' {overlap}, {length}",
-            "line": (f"Overlaps '{name}' ({state}, {span}{', ' + proposed if proposed else ''}): "
+            "line": (f"Overlaps '{name}' ({state}, {span}{', ' + by_whom if by_whom else ''}): "
                      f"overlaps {overlap}, {length}. Why: {why}. [{other.id}]"),
             "brief": f"overlaps '{name}' {overlap}, {length} ({why})",
             "why": why, "consequence": consequence, "way_out": WAY_OUT,
             "title": f"This window and '{name}' overlap",
-            "rows": [["Other window", " · ".join(x for x in (name, state, span, f"scope {other.scope}", proposed) if x)],
+            "rows": [["Other window", " · ".join(x for x in (name, state, span, f"scope {other.scope}", by_whom) if x)],
                      ["Shared span", f"{overlap}, {length}"],
                      ["Rule", why],
                      ["What it means", consequence],

@@ -43,6 +43,7 @@ def window_view(actions: Any, window: Any, now: int) -> dict[str, Any]:
     data["conflicts"] = overlaps.describe(actions, window, now)
     data["overlaps"] = [c["id"] for c in data["conflicts"]]
     data["proposer"] = overlaps.proposer(window.proposed_by)  # the agent profile, not a person
+    data["proposed"] = overlaps.proposed(window.proposed_by)  # the words: "proposed by profile 'default'"
     data["starts"] = actions.fmt(window.start_ts)
     data["decided_at"] = window.decided_at
     data["decided_when"] = actions.fmt(window.decided_at) if window.decided_at else ""

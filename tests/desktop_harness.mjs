@@ -114,7 +114,7 @@ try {
     why: 'same scope k8s-prod; both windows are exclusive', consequence,
     way_out: 'Decline one of them, or ask the agent to propose another time.',
     title: `This window and 'name ${id}' overlap`,
-    rows: [['Other window', `name ${id} · ${state} · span ${id} · scope k8s-prod · proposed by dba`], ['Shared span', '11:00-12:00, 1 h'],
+    rows: [['Other window', `name ${id} · ${state} · span ${id} · scope k8s-prod · proposed by profile 'dba'`], ['Shared span', '11:00-12:00, 1 h'],
            ['Rule', 'same scope k8s-prod; both windows are exclusive'], ['What it means', consequence],
            ['Ways out', 'Decline one of them, or ask the agent to propose another time.']],
     pair: `Overlap: 'name ${mine}' and 'name ${id}', 11:00-12:00, 1 h`, note: 'overlap 1 h'
@@ -122,7 +122,7 @@ try {
   const win = (id, extra) => ({
     id, name: `name ${id}`, scope: 'k8s-prod', start_ts: NOW + 3630, end_ts: NOW + 7230, exclusive: true, presence: false,
     state: 'pending', kind: 'planned', reason: `reason ${id}`, cards: [], checked_in_at: null, closed_at: null,
-    decided_via: null, open: false, span: `span ${id}`, overlaps: [], conflicts: [], proposer: 'ops',
+    decided_via: null, open: false, span: `span ${id}`, overlaps: [], conflicts: [], proposer: 'ops', proposed: "proposed by profile 'ops'",
     starts: 'Tue 10 Nov 11:00', decided_at: null, decided_when: '', closed_when: '', card_details: [], ...extra
   })
   const DATA = {
@@ -255,7 +255,7 @@ try {
   setQueries({ ...DATA, mode: 'off', windows: [], skew: 0 })
   out.doorOff = door(page())
   // a backend from before the runway: no days, no conflict details, no formatted moments
-  const old = w => { const { conflicts, proposer, starts, decided_when, closed_when, card_details, decided_at, ...rest } = w; return rest }
+  const old = w => { const { conflicts, proposer, proposed, starts, decided_when, closed_when, card_details, decided_at, ...rest } = w; return rest }
   setQueries({ now: NOW, approval: true, windows: DATA.windows.map(old), skew: 0 })
   out.oldBackend = { runway: runway(page()), door: door(page()), chips: having(page(), 'data-overlap').map(label),
                      buttons: summary(page()).buttons.length }

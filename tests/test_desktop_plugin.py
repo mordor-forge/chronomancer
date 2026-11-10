@@ -159,6 +159,9 @@ def test_the_runway_is_a_ladder_when_narrow_and_is_drawn_at_its_measured_width(r
     assert ladder["kind"] == "ladder" and ladder["days"] == 2 and ladder["needle"] == ["10:00"]
     assert {b["id"] for b in ladder["bars"]} == {b["id"] for b in ran["runway"]["bars"]}
     assert ladder["bands"][0]["text"] == ["⚠ overlap 1 h"]
+    # the overlap note has its own line, so both names of an overlapping pair stay whole
+    assert "11:00 name WAAAAA1" in ran["narrow"]["texts"] and "11:00 name WAAAAA2" in ran["narrow"]["texts"]
+    assert "'data-note': 'own-line'" in SOURCE and "roomAt" not in SOURCE
     assert ran["squeezed"] == "ladder"  # a wide window with a narrow content column
     assert ran["measured"].startswith("0 0 900 ") and ran["runway"]["viewBox"].startswith("0 0 960 ")
 
@@ -170,7 +173,7 @@ def test_windows_are_cards_grouped_by_state_with_the_open_one_first(ran):
                                               "Closed, expired or declined")]
     assert order == sorted(order)
     for text in ("span WAAAAA3 · 42 min left", "span WAAAAA1 · starts in 1 h", "span WAAAAA5 · ended 1 h ago",
-                 "scope k8s-prod", "scope infra", "Proposed by ops · exclusive", "reason WAAAAA1"):
+                 "scope k8s-prod", "scope infra", "exclusive · proposed by profile 'ops'", "reason WAAAAA1"):
         assert text in wide["texts"], text
     assert [b["label"] for b in wide["buttons"]] == ["Close now", "Approve", "Decline", "Close now", "Close now"]
     assert all(b["size"] == "touch" for b in wide["buttons"])
@@ -206,7 +209,7 @@ def test_an_overlap_is_a_sentence_on_a_button_that_opens_the_conflict_on_the_oth
     assert panel["on"] == "WAAAAA2:WAAAAA1" and panel["role"] == "region"  # on the OTHER window's card
     assert panel["title"] == "This window and 'name WAAAAA1' overlap"
     assert panel["rows"] == [
-        ["Other window", "name WAAAAA1 · pending · span WAAAAA1 · scope k8s-prod · proposed by dba WAAAAA1"],
+        ["Other window", "name WAAAAA1 · pending · span WAAAAA1 · scope k8s-prod · proposed by profile 'dba' WAAAAA1"],
         ["Shared span", "11:00-12:00, 1 h"],
         ["Rule", "same scope k8s-prod; both windows are exclusive"],
         ["What it means", "Approving 'name WAAAAA1' is refused while this window is approved."],

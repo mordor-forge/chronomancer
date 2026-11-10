@@ -42,12 +42,12 @@ def test_a_conflict_names_the_other_window_the_span_the_rule_and_the_way_out(sto
     assert back["consequence"] == "Approving 'web v2 rollout' is refused while this window is approved."
     # the wording every surface lays out: a chip, a message line, a list row, a panel, a timeline tag
     assert fact["label"] == "Overlaps 'Argo CD upgrade' 14:30-15:00, 30 min"
-    assert fact["line"] == ("Overlaps 'Argo CD upgrade' (open, Tue 10 Nov 14:00-15:00 UTC, proposed by platform): "
+    assert fact["line"] == ("Overlaps 'Argo CD upgrade' (open, Tue 10 Nov 14:00-15:00 UTC, proposed by profile 'platform'): "
                             f"overlaps 14:30-15:00, 30 min. Why: same scope k8s-prod; both windows are exclusive. [{argo.id}]")
     assert fact["brief"] == "overlaps 'Argo CD upgrade' 14:30-15:00, 30 min (same scope k8s-prod; both windows are exclusive)"
     assert fact["title"] == "This window and 'Argo CD upgrade' overlap"
     assert fact["rows"] == [
-        ["Other window", "Argo CD upgrade · open · Tue 10 Nov 14:00-15:00 UTC · scope k8s-prod · proposed by platform"],
+        ["Other window", "Argo CD upgrade · open · Tue 10 Nov 14:00-15:00 UTC · scope k8s-prod · proposed by profile 'platform'"],
         ["Shared span", "14:30-15:00, 30 min"],
         ["Rule", "same scope k8s-prod; both windows are exclusive"],
         ["What it means", "Approving this window is refused while 'Argo CD upgrade' is approved."],
@@ -81,6 +81,8 @@ def test_the_surfaces_hold_no_copy_of_the_wording():
         for words in ("Overlaps '", "overlaps '", "Shared span", "Other window", "What it means", "Ways out", "This window and",
                       "Can't approve", "is exclusive", "same scope"):
             assert words not in text, (path.name, words)
+        if path.suffix in (".js", ".html"):
+            assert "roposed by" not in text, path.name  # served as ``proposed``
 
 
 @pytest.mark.parametrize("mine,theirs,rule", [(True, False, "this window is exclusive"),
@@ -150,6 +152,9 @@ def test_the_owner_view_carries_conflicts_proposer_stamps_and_the_two_days(store
     rows = {w["id"]: w for w in data["windows"]}
     assert rows[b.id]["overlaps"] == [a.id] and rows[b.id]["conflicts"][0]["name"] == "a"
     assert rows[a.id]["proposer"] == "ops" and rows[b.id]["proposer"] == "owner"
+    # "Proposed by default" read as "by default": an agent profile is named as a profile, in quotes
+    assert rows[a.id]["proposed"] == "proposed by profile 'ops'" and rows[b.id]["proposed"] == "proposed by owner"
+    assert overlaps.proposed("agent:default") == "proposed by profile 'default'" and overlaps.proposed("") == ""
     assert rows[a.id]["starts"] == "Tue 10 Nov 14:00" and rows[a.id]["decided_when"] == "Tue 10 Nov 13:58"
     assert rows[b.id]["decided_when"] == "" and rows[b.id]["closed_when"] == "" and rows[b.id]["card_details"] == []
     assert data["zone"] == "UTC" and [d["label"] for d in data["days"]] == ["Tue 10 Nov", "Wed 11 Nov"]

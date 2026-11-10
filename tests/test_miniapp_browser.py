@@ -169,7 +169,7 @@ def test_door_runway_and_the_conflict_sheet_in_a_light_and_a_dark_telegram_theme
             assert await page.locator('#detail-name').text_content() == 'Index rebuild on orders'
             explain = await page.locator('#detail-explain').inner_text()
             for text in ("This window and 'Postgres minor upgrade' overlap", 'Postgres minor upgrade · pending · ',
-                         'scope db-prod · proposed by test', '10:30-11:00, 30 min', 'same scope db-prod; both windows are exclusive',
+                         "scope db-prod · proposed by profile 'test'", '10:30-11:00, 30 min', 'same scope db-prod; both windows are exclusive',
                          'Only one of them can be approved', 'Decline one of them, or ask the agent to propose another time.'):
                 assert text in explain, (text, explain)
             assert await page.locator('.item.lit').count() == 2 and await page.locator('.bar.lit').count() == 2

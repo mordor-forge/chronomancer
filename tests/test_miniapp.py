@@ -184,7 +184,7 @@ def test_window_responses_expose_only_display_fields(h, monkeypatch):
             detail = await client.get(f'/api/windows/{w.id}', headers=h.headers())
             listing = await client.get('/api/windows', headers=h.headers())
             for row in ((await detail.json())['window'], (await listing.json())['windows'][0]):
-                assert set(row) == fields | {'open', 'span', 'overlaps', 'conflicts', 'proposer', 'starts', 'decided_at',
+                assert set(row) == fields | {'open', 'span', 'overlaps', 'conflicts', 'proposer', 'proposed', 'starts', 'decided_at',
                                              'decided_when', 'closed_when', 'card_details'}
                 assert row['state'] == 'approved'
     asyncio.run(main())

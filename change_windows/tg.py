@@ -141,7 +141,9 @@ class Actions:
                  "exclusive" if w.exclusive else "shared (other windows may overlap)"]
         if w.cards:
             lines.append("Cards: " + "; ".join(self._card(c) for c in w.cards))
-        lines.append(f"Proposed by {w.proposed_by}")
+        by_whom = overlaps.proposed(w.proposed_by)
+        if by_whom:
+            lines.append(by_whom[0].upper() + by_whom[1:])
         lines.append(f"Reason: {w.reason}")
         conflicts = overlaps.describe(self, w, now)
         for fact in conflicts:

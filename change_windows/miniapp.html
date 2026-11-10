@@ -286,7 +286,7 @@ function show(w) {
   $('back').hidden = !origin;
   $('detail-state').textContent = stateWord(w);
   $('detail-name').textContent = w.name;
-  $('detail-meta').textContent = `${w.span} · ${relative(w)}\nscope ${w.scope} · ${w.exclusive ? 'exclusive' : 'shared'}\nProposed by ${w.proposer ?? ''}`;
+  $('detail-meta').textContent = [`${w.span} · ${relative(w)}`, `scope ${w.scope} · ${w.exclusive ? 'exclusive' : 'shared'}`, w.proposed].filter(Boolean).join('\n');
   $('detail-reason').textContent = w.reason;
   $('detail-cards').replaceChildren();
   const details = new Map((w.card_details || []).map(d => [d.task_id, d]));
@@ -340,7 +340,7 @@ async function refresh() {
       const item = node('div', '', 'item'); item.dataset.window = w.id;
       const main = node('button', '', 'window');
       main.append(node('span', stateWord(w), 'state'), node('strong', w.name),
-        node('small', `${w.span} · ${relative(w)}`), node('small', `scope ${w.scope} · proposed by ${w.proposer ?? ''}`));
+        node('small', `${w.span} · ${relative(w)}`), node('small', [`scope ${w.scope}`, w.proposed].filter(Boolean).join(' · ')));
       main.onclick = () => openSheet(w);
       item.append(main); overlapButtons(w, item);
       $('windows').append(item);

@@ -98,7 +98,7 @@ def test_approval_refuses_an_overlap_with_an_approved_window(store):
     reply = actions.on_button(OWNER, f"cw:approve:{b.id}")
     assert reply.alert and reply.toast.startswith("Can't approve 'b': it overlaps 'a' (approved, ")
     assert store.get(b.id).state == "pending"
-    assert f"Overlaps 'a' (approved, Fri 15 Jan 08:10-09:10 UTC, proposed by test): overlaps 08:10-09:10, 1 h." in reply.text
+    assert f"Overlaps 'a' (approved, Fri 15 Jan 08:10-09:10 UTC, proposed by profile 'test'): overlaps 08:10-09:10, 1 h." in reply.text
     assert reply.buttons[-1] == [("Conflicts (1)", f"cw:conflicts:{b.id}")]
 
 
@@ -115,9 +115,9 @@ def test_proposal_message_shows_overlaps_and_buttons(store):
     text, buttons = make(store).window_message(store.get(b.id), NOW)
     assert text.startswith("Window proposal: b")
     # a person reads the name, the state, the span, the proposer, the shared span and the rule; the id is last
-    assert (f"Overlaps 'a' (pending, Fri 15 Jan 08:10-09:10 UTC, proposed by test): overlaps 08:10-09:10, 1 h. "
+    assert (f"Overlaps 'a' (pending, Fri 15 Jan 08:10-09:10 UTC, proposed by profile 'test'): overlaps 08:10-09:10, 1 h. "
             f"Why: same scope k8s-prod; both windows are exclusive. [{a.id}]") in text
-    assert "Cards: t_ab12cd" in text and "Reason: roll out web v2" in text and "Proposed by agent:test" in text
+    assert "Cards: t_ab12cd" in text and "Reason: roll out web v2" in text and "Proposed by profile 'test'" in text
     assert text.splitlines()[1] == "scope k8s-prod" and text.splitlines()[-1] == f"id {b.id}"
     assert buttons == [[("Approve", f"cw:approve:{b.id}"), ("Decline", f"cw:decline:{b.id}")],
                        [("Conflicts (1)", f"cw:conflicts:{b.id}")]]
@@ -135,7 +135,7 @@ def test_conflicts_button_explains_each_conflict_and_show_posts_that_window(stor
     text, buttons = reply.messages[0]
     assert text.splitlines() == [
         "Conflict 1 of 2 for 'b'",
-        "Other window: a · approved · Fri 15 Jan 08:10-09:10 UTC · scope k8s-prod · proposed by test",
+        "Other window: a · approved · Fri 15 Jan 08:10-09:10 UTC · scope k8s-prod · proposed by profile 'test'",
         "Shared span: 08:10-09:10, 1 h",
         "Rule: same scope k8s-prod; both windows are exclusive",
         "What it means: Approving this window is refused while 'a' is approved.",

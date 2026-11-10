@@ -119,7 +119,6 @@ const EN = {
   exclusive: 'exclusive',
   shared: 'shared (other windows may overlap)',
   scope: scope => `scope ${scope}`,
-  proposedBy: who => `Proposed by ${who}`,
   copyId: 'Copy the window id',
   card: {
     open: id => `Open the Kanban board (card ${id})`,
@@ -806,10 +805,30 @@ function LadderDay({ day, index, top, width, view, data }) {
   const lanes = pack(bars, bar => [bar.from, bar.to])
   const labelX = TIME_COL + 8 + lanes * 16
   const bands = bandsOf(data, day)
-  const notes = bands.map(band => y(band.from) + 11) // where each overlap note sits, right-aligned
-  const roomAt = at => Math.max(6, Math.floor((width - labelX - (notes.some(note => Math.abs(note - at) < 13) ? 104 : 4)) / CHAR))
+  const room = Math.max(6, Math.floor((width - labelX - 4) / CHAR))
   const parts = []
+  // Where each label sits. An overlap note takes its own line under the labels of its two windows,
+  // so the names keep the whole width.
+  const labelAt = {}
+  const noteAt = {}
   let lastLabel = -100
+
+  for (const bar of bars) {
+    let labelY = Math.max(y(bar.from) + 10, lastLabel + 13)
+
+    // Keep the label clear of the needle, which would strike it through.
+    if (today && Math.abs(labelY - 4 - y(view.now)) < 8) {
+      labelY = y(view.now) + 13
+    }
+
+    labelAt[bar.w.id] = lastLabel = labelY
+
+    for (const band of bands) {
+      if (noteAt[band.key] === undefined && band.ids.every(id => labelAt[id] !== undefined)) {
+        noteAt[band.key] = lastLabel = lastLabel + 13
+      }
+    }
+  }
 
   parts.push(text({ key: 'day', x: 0, y: top + 12, style: svgText(12, 'primary', { fontWeight: 600 }) }, t(index ? 'runway.tomorrow' : 'runway.today', day.label)))
 
@@ -838,27 +857,21 @@ function LadderDay({ day, index, top, width, view, data }) {
         'g',
         { key: `band${band.key}`, role: 'img', 'aria-label': band.pair, 'data-band': 'overlap', 'data-strong': strong ? 'yes' : 'no' },
         jsx('rect', { x: TIME_COL + 2, y: y0, width: labelX - TIME_COL - 5, height: Math.max(4, y(band.to) - y0), style: { fill: C.hatchWarn, fillOpacity: strong ? 1 : 0.7, stroke: C.secondary, strokeWidth: strong ? 2 : 1, strokeDasharray: strong ? undefined : '3 3' } }),
-        text({ x: width - 4, y: y0 + 11, textAnchor: 'end', style: svgText(10, 'primary', { fontWeight: 600 }) }, `⚠ ${band.note}`)
+        text({ x: labelX, y: noteAt[band.key] === undefined ? y0 + 11 : noteAt[band.key], 'data-note': 'own-line', style: svgText(10, 'primary', { fontWeight: 600 }) }, `⚠ ${band.note}`)
       )
     )
   }
 
   for (const bar of bars) {
     const y0 = y(bar.from)
-    let labelY = Math.max(y0 + 10, lastLabel + 13)
+    const labelY = labelAt[bar.w.id]
 
-    // Keep the label clear of the needle, which would strike it through.
-    if (today && Math.abs(labelY - 4 - y(view.now)) < 8) {
-      labelY = y(view.now) + 13
-    }
-
-    lastLabel = labelY
     parts.push(
       jsx(Bar, {
         bar,
         view,
         box: { x: TIME_COL + (bar.kind === 'open' ? 4 : 6) + bar.lane * 16, y: y0, width: bar.kind === 'open' ? 14 : 10, height: Math.max(6, y(bar.to) - y0) },
-        label: `${hm(day, bar.from)} ${cut(bar.w.name, Math.max(4, roomAt(labelY) - 6))}`,
+        label: `${hm(day, bar.from)} ${cut(bar.w.name, Math.max(4, room - 6))}`,
         labelAt: { x: labelX, y: labelY, textAnchor: 'start' }
       }, `bar${bar.w.id}`)
     )
@@ -878,7 +891,7 @@ function LadderDay({ day, index, top, width, view, data }) {
     )
   }
 
-  return { height: DAY_HEAD + 6 + height + 6, node: jsx('g', { 'data-day': index, children: parts }, `day${index}`) }
+  return { height: Math.max(DAY_HEAD + 6 + height + 6, lastLabel - top + 8), node: jsx('g', { 'data-day': index, children: parts }, `day${index}`) }
 }
 
 function Legend() {
@@ -1111,7 +1124,7 @@ function WindowCard({ w, data, view, approval, ask }) {
     el(
       'div',
       { style: S.row },
-      jsx('span', { style: S.small, children: [w.proposer ? t('proposedBy', w.proposer) : '', t(w.exclusive ? 'exclusive' : 'shared')].filter(Boolean).join(' · ') }),
+      jsx('span', { style: S.small, children: [t(w.exclusive ? 'exclusive' : 'shared'), w.proposed || ''].filter(Boolean).join(' · ') }),
       jsx('span', { style: S.id, children: w.id }),
       jsx(CopyButton, { appearance: 'icon', buttonSize: 'icon-xs', text: w.id, label: t('copyId') })
     ),
