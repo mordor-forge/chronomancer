@@ -372,7 +372,6 @@ const startOf = (w, data) => (w.starts ? short(w.starts, data) : clock(w.start_t
 const C = {
   primary: 'var(--ui-text-primary)',
   secondary: 'var(--ui-text-secondary)',
-  tertiary: 'var(--ui-text-tertiary)',
   stroke: 'var(--ui-stroke-secondary)',
   accent: 'var(--ui-accent)',
   green: 'var(--ui-green)',
@@ -389,10 +388,10 @@ const MONO = 'var(--dt-font-mono, ui-monospace, monospace)'
 const S = {
   page: { height: '100%', overflowY: 'auto', color: C.primary },
   inner: { maxWidth: '72rem', margin: '0 auto', padding: '1.25rem 1rem 3rem', display: 'grid', gap: '1.5rem' },
-  h1: { fontSize: '0.8125rem', fontWeight: 600, margin: 0, color: C.secondary },
+  h1: { fontSize: '0.8125rem', fontWeight: 600, margin: 0, color: C.primary },
   h2: { fontSize: '0.875rem', fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' },
-  hint: { fontSize: '0.8125rem', color: C.secondary, margin: 0 },
-  notice: { fontSize: '0.8125rem', color: C.secondary, border: `1px solid ${C.stroke}`, borderRadius: '8px', padding: '0.625rem 0.75rem' },
+  hint: { fontSize: '0.8125rem', color: C.primary, margin: 0 },
+  notice: { fontSize: '0.8125rem', color: C.primary, border: `1px solid ${C.stroke}`, borderRadius: '8px', padding: '0.625rem 0.75rem' },
   section: { display: 'grid', gap: '0.625rem' },
   hero: { border: `1px solid ${C.stroke}`, borderRadius: '12px', padding: '1rem', display: 'grid', gap: '1rem', minWidth: 0 },
   door: { display: 'flex', alignItems: 'flex-start', gap: '0.875rem', minWidth: 0 },
@@ -407,15 +406,15 @@ const S = {
   doorTone: {
     open: { color: C.green, border: `2px solid ${C.green}` },
     closed: { color: C.secondary, border: `2px solid ${C.secondary}` },
-    warn: { color: C.yellow, border: `2px dashed ${C.yellow}` }
+    warn: { color: C.primary, border: `2px dashed ${C.primary}` }
   },
   doorText: { display: 'grid', gap: '0.25rem', minWidth: 0 },
   doorTitle: { fontSize: 'clamp(1.125rem, 0.75rem + 2vw, 1.5rem)', lineHeight: 1.2, fontWeight: 650, letterSpacing: '-0.01em', margin: 0, overflowWrap: 'anywhere' },
-  doorSub: { fontSize: '0.875rem', color: C.secondary, margin: 0, overflowWrap: 'anywhere' },
+  doorSub: { fontSize: '0.875rem', color: C.primary, margin: 0, overflowWrap: 'anywhere' },
   runway: { display: 'grid', gap: '0.375rem', minWidth: 0 },
   svg: { display: 'block', width: '100%', height: 'auto', overflow: 'visible' },
-  readout: { fontSize: '0.75rem', color: C.secondary, minHeight: '1.125rem', margin: 0, overflowWrap: 'anywhere' },
-  legend: { display: 'flex', flexWrap: 'wrap', gap: '0.25rem 0.875rem', fontSize: '0.6875rem', color: C.secondary, margin: 0, padding: 0, listStyle: 'none' },
+  readout: { fontSize: '0.75rem', color: C.primary, minHeight: '1.125rem', margin: 0, overflowWrap: 'anywhere' },
+  legend: { display: 'flex', flexWrap: 'wrap', gap: '0.25rem 0.875rem', fontSize: '0.6875rem', color: C.primary, margin: 0, padding: 0, listStyle: 'none' },
   legendItem: { display: 'inline-flex', alignItems: 'center', gap: '0.3125rem' },
   cards: { display: 'grid', gap: '0.75rem', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 24rem), 1fr))', alignItems: 'start' },
   card: { border: `1px solid ${C.stroke}`, borderRadius: '10px', padding: '0.875rem', display: 'grid', gap: '0.5rem', minWidth: 0, outline: 'none' },
@@ -424,9 +423,9 @@ const S = {
   row: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.375rem', minWidth: 0 },
   head: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem', minWidth: 0 },
   name: { fontSize: '0.9375rem', fontWeight: 600, overflowWrap: 'anywhere', flex: '1 1 8rem', minWidth: 0 },
-  meta: { fontSize: '0.8125rem', color: C.secondary, overflowWrap: 'anywhere' },
-  small: { fontSize: '0.75rem', color: C.secondary, overflowWrap: 'anywhere' },
-  id: { fontFamily: MONO, fontSize: '0.6875rem', color: C.tertiary, userSelect: 'all' },
+  meta: { fontSize: '0.8125rem', color: C.primary, overflowWrap: 'anywhere' },
+  small: { fontSize: '0.75rem', color: C.primary, overflowWrap: 'anywhere' },
+  id: { fontFamily: MONO, fontSize: '0.6875rem', color: C.primary, userSelect: 'all' },
   reason: { fontSize: '0.8125rem', color: C.primary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
   foot: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.625rem', marginTop: '0.125rem' },
   actions: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' },
@@ -437,7 +436,7 @@ const S = {
     padding: '0.25rem 0.5rem',
     border: `3px double ${C.secondary}`,
     borderRadius: '4px',
-    color: C.secondary,
+    color: C.primary,
     fontFamily: MONO,
     fontSize: '0.6875rem',
     lineHeight: 1.3,
@@ -453,7 +452,7 @@ const S = {
     gap: '0.375rem',
     maxWidth: '100%',
     padding: '0.1875rem 0.4375rem',
-    border: `1px solid ${C.stroke}`,
+    border: `1px solid ${C.secondary}`,
     borderRadius: '4px',
     background: C.clear,
     color: C.primary,
@@ -464,19 +463,19 @@ const S = {
     cursor: 'pointer',
     overflowWrap: 'anywhere'
   },
-  overlapChip: { border: `1px solid ${C.yellow}` },
-  panel: { border: `1px solid ${C.yellow}`, borderRadius: '8px', padding: '0.75rem', display: 'grid', gap: '0.625rem', minWidth: 0 },
+  overlapChip: { borderStyle: 'dashed' },
+  panel: { border: `1px solid ${C.secondary}`, borderLeft: `4px solid ${C.yellow}`, borderRadius: '8px', padding: '0.75rem', display: 'grid', gap: '0.625rem', minWidth: 0 },
   panelTitle: { fontSize: '0.875rem', fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', gap: '0.375rem', overflowWrap: 'anywhere' },
   facts: { display: 'grid', gridTemplateColumns: 'minmax(5.5rem, max-content) 1fr', gap: '0.3125rem 0.75rem', margin: 0, fontSize: '0.8125rem' },
-  term: { color: C.secondary, margin: 0 },
+  term: { color: C.primary, margin: 0 },
   fact: { margin: 0, color: C.primary, overflowWrap: 'anywhere', minWidth: 0 },
   ledger: { listStyle: 'none', margin: 0, padding: '0.375rem 0 0', display: 'grid', borderTop: `1px solid ${C.stroke}` },
   entry: { display: 'flex', alignItems: 'baseline', gap: '0.625rem', padding: '0.25rem 0', fontSize: '0.75rem', minWidth: 0 },
-  moment: { flex: '0 0 auto', width: '21ch', fontFamily: MONO, color: C.secondary, whiteSpace: 'nowrap' },
+  moment: { flex: '0 0 auto', width: '21ch', fontFamily: MONO, color: C.primary, whiteSpace: 'nowrap' },
   glyph: { flex: '0 0 auto', width: '1rem', textAlign: 'center' },
-  glyphTone: { blocked: { color: C.red }, warned: { color: C.yellow }, allowed: { color: C.green }, plain: { color: C.secondary } },
+  glyphTone: { blocked: { color: C.red }, warned: { color: C.yellow }, allowed: { color: C.green }, plain: { color: C.primary } },
   line: { flex: '1 1 auto', minWidth: 0, color: C.primary, overflowWrap: 'anywhere' },
-  chip: { display: 'inline-flex', alignItems: 'center', gap: '0.25rem', height: '100%', padding: '0 0.375rem', fontSize: '0.6875rem', color: C.secondary, background: C.clear, border: 0, cursor: 'pointer', whiteSpace: 'nowrap' }
+  chip: { display: 'inline-flex', alignItems: 'center', gap: '0.25rem', height: '100%', padding: '0 0.375rem', fontSize: '0.6875rem', color: C.primary, background: C.clear, border: 0, cursor: 'pointer', whiteSpace: 'nowrap' }
 }
 
 /** jsx() for one child, jsxs() for several: the calls an uncompiled plugin writes by hand. */
@@ -571,10 +570,10 @@ function Door({ data }) {
 const NIGHT = [[0, 6], [22, 24]] // hours of the quiet band
 const DRAWN = { open: 'open', approved: 'approved', waiting: 'approved', pending: 'pending', ended: 'past', closed: 'past' }
 const BAR_PAINT = {
-  open: { fill: C.green, stroke: C.primary, strokeWidth: 1.5 },
+  open: { fill: C.green, stroke: C.primary, strokeWidth: 2 },
   approved: { fill: C.secondary, stroke: C.secondary, strokeWidth: 1 },
   pending: { fill: C.hatch, stroke: C.secondary, strokeWidth: 1.5, strokeDasharray: '4 3' },
-  past: { fill: C.stroke, stroke: C.tertiary, strokeWidth: 1 }
+  past: { fill: C.stroke, stroke: C.secondary, strokeWidth: 1 }
 }
 // Opening a window is one short fill of its bar. The app turns transitions off for reduced motion.
 const BAR_MOTION = { transition: 'fill 200ms ease-out, stroke 200ms ease-out' }
@@ -691,7 +690,7 @@ function Bar({ bar, box, label, labelAt, view }) {
       : null,
     jsx('rect', { ...box, rx: 3, style: { ...BAR_PAINT[kind], ...BAR_MOTION } }),
     label
-      ? text({ ...labelAt, style: svgText(11, kind === 'past' ? 'secondary' : 'primary', { fontWeight: kind === 'open' ? 700 : 500 }) }, label)
+      ? text({ ...labelAt, style: svgText(11, 'primary', { fontWeight: kind === 'open' ? 700 : 500 }) }, label)
       : null
   )
 }
@@ -700,7 +699,7 @@ const DAY_HEAD = 18 // the day label
 const TICKS = 16 // hour labels
 const LANE = 22
 const STRIP = 16 // under the lanes: overlap and night labels
-const CHAR = 6.3 // width of one 11px label character, for lane packing
+const CHAR = 6.9 // width of one 11px label character (a monospace theme is the widest), for lane packing
 
 function WideDay({ day, index, top, width, view, data }) {
   const t = usePluginI18n(ID)
@@ -733,7 +732,7 @@ function WideDay({ day, index, top, width, view, data }) {
     parts.push(jsx('rect', { key: `night${from}`, 'data-band': 'night', x: (from / 24) * width, y: trackTop, width: ((to - from) / 24) * width, height: trackHeight, style: { fill: C.primary, fillOpacity: 0.07 } }))
   }
 
-  parts.push(text({ key: 'nightLabel', x: 5, y: trackTop + trackHeight - 5, style: svgText(10, 'secondary') }, t('runway.night')))
+  parts.push(text({ key: 'nightLabel', x: 5, y: trackTop + trackHeight - 5, style: svgText(10, 'primary') }, t('runway.night')))
 
   const step = width / 24 >= 22 ? 3 : 6
 
@@ -743,7 +742,7 @@ function WideDay({ day, index, top, width, view, data }) {
     parts.push(jsx('line', { key: `tick${hour}`, x1: at, x2: at, y1: trackTop - (hour % step ? 3 : 5), y2: trackTop, style: { stroke: C.secondary } }))
 
     if (hour % step === 0 && Math.abs(at - needle) > 44) {
-      parts.push(text({ key: `hour${hour}`, x: at, y: trackTop - 7, textAnchor: hour === 0 ? 'start' : hour === 24 ? 'end' : 'middle', style: svgText(10, 'secondary', { fontFamily: MONO }) }, two(hour)))
+      parts.push(text({ key: `hour${hour}`, x: at, y: trackTop - 7, textAnchor: hour === 0 ? 'start' : hour === 24 ? 'end' : 'middle', style: svgText(10, 'primary', { fontFamily: MONO }) }, two(hour)))
     }
   }
 
@@ -763,8 +762,8 @@ function WideDay({ day, index, top, width, view, data }) {
       el(
         'g',
         { key: `band${band.key}`, role: 'img', 'aria-label': t('runway.overlapLabel', band.names[0], band.names[1], band.span, band.length), 'data-band': 'overlap', 'data-strong': strong ? 'yes' : 'no' },
-        jsx('rect', { x: x0, y: bandTop, width: bandWidth, height: bandHeight, style: { fill: C.hatchWarn, fillOpacity: strong ? 1 : 0.7, stroke: C.yellow, strokeWidth: strong ? 2 : 1, strokeDasharray: strong ? undefined : '3 3' } }),
-        jsx('line', { x1: x0, x2: x0, y1: bandTop + bandHeight, y2: trackTop + trackHeight - 14, style: { stroke: C.yellow, strokeDasharray: '2 2' } }),
+        jsx('rect', { x: x0, y: bandTop, width: bandWidth, height: bandHeight, style: { fill: C.hatchWarn, fillOpacity: strong ? 1 : 0.7, stroke: C.secondary, strokeWidth: strong ? 2 : 1, strokeDasharray: strong ? undefined : '3 3' } }),
+        jsx('line', { x1: x0, x2: x0, y1: bandTop + bandHeight, y2: trackTop + trackHeight - 14, style: { stroke: C.secondary, strokeDasharray: '2 2' } }),
         text({ x: right ? x0 + bandWidth : x0, y: trackTop + trackHeight - 5, textAnchor: right ? 'end' : 'start', style: svgText(10, 'primary', { fontWeight: 600 }) }, `⚠ ${t('runway.overlap', band.length)}`)
       )
     )
@@ -777,7 +776,7 @@ function WideDay({ day, index, top, width, view, data }) {
       jsx(Bar, {
         bar,
         view,
-        box: { ...bar.box, y, height: 14 },
+        box: bar.kind === 'open' ? { ...bar.box, y: y - 2, height: 18 } : { ...bar.box, y, height: 14 },
         label: bar.name,
         labelAt: { x: bar.flip ? bar.box.x - 5 : bar.box.x + bar.box.width + 5, y: y + 11, textAnchor: bar.flip ? 'end' : 'start' }
       }, `bar${bar.w.id}`)
@@ -838,7 +837,7 @@ function LadderDay({ day, index, top, width, view, data }) {
     const at = bodyTop + (hour - first) * HOUR
 
     parts.push(jsx('line', { key: `rule${hour}`, x1: TIME_COL, x2: width, y1: at, y2: at, style: { stroke: C.stroke } }))
-    parts.push(text({ key: `hour${hour}`, x: TIME_COL - 6, y: at + 3.5, textAnchor: 'end', style: svgText(10, 'secondary', { fontFamily: MONO }) }, `${two(hour)}:00`))
+    parts.push(text({ key: `hour${hour}`, x: TIME_COL - 6, y: at + 3.5, textAnchor: 'end', style: svgText(10, 'primary', { fontFamily: MONO }) }, `${two(hour)}:00`))
   }
 
   for (const band of bands) {
@@ -849,7 +848,7 @@ function LadderDay({ day, index, top, width, view, data }) {
       el(
         'g',
         { key: `band${band.key}`, role: 'img', 'aria-label': t('runway.overlapLabel', band.names[0], band.names[1], band.span, band.length), 'data-band': 'overlap', 'data-strong': strong ? 'yes' : 'no' },
-        jsx('rect', { x: TIME_COL + 2, y: y0, width: labelX - TIME_COL - 5, height: Math.max(4, y(band.to) - y0), style: { fill: C.hatchWarn, fillOpacity: strong ? 1 : 0.7, stroke: C.yellow, strokeWidth: strong ? 2 : 1, strokeDasharray: strong ? undefined : '3 3' } }),
+        jsx('rect', { x: TIME_COL + 2, y: y0, width: labelX - TIME_COL - 5, height: Math.max(4, y(band.to) - y0), style: { fill: C.hatchWarn, fillOpacity: strong ? 1 : 0.7, stroke: C.secondary, strokeWidth: strong ? 2 : 1, strokeDasharray: strong ? undefined : '3 3' } }),
         text({ x: width - 4, y: y0 + 11, textAnchor: 'end', style: svgText(10, 'primary', { fontWeight: 600 }) }, `⚠ ${t('runway.overlap', band.length)}`)
       )
     )
@@ -869,7 +868,7 @@ function LadderDay({ day, index, top, width, view, data }) {
       jsx(Bar, {
         bar,
         view,
-        box: { x: TIME_COL + 6 + bar.lane * 16, y: y0, width: 10, height: Math.max(6, y(bar.to) - y0) },
+        box: { x: TIME_COL + (bar.kind === 'open' ? 4 : 6) + bar.lane * 16, y: y0, width: bar.kind === 'open' ? 14 : 10, height: Math.max(6, y(bar.to) - y0) },
         label: `${hm(day, bar.from)} ${cut(bar.w.name, Math.max(4, roomAt(labelY) - 6))}`,
         labelAt: { x: labelX, y: labelY, textAnchor: 'start' }
       }, `bar${bar.w.id}`)
@@ -902,11 +901,11 @@ function Legend() {
   return el(
     'ul',
     { style: S.legend },
-    swatch('open', box(BAR_PAINT.open)),
+    swatch('open', jsx('rect', { x: 1, y: 0.5, width: 14, height: 9, rx: 2, style: { ...BAR_PAINT.open, strokeWidth: 1.5 } })),
     swatch('approved', box(BAR_PAINT.approved)),
     swatch('pending', box(BAR_PAINT.pending)),
     swatch('past', box(BAR_PAINT.past)),
-    swatch('overlap', box({ fill: C.hatchWarn, stroke: C.yellow, strokeDasharray: '3 3' })),
+    swatch('overlap', box({ fill: C.hatchWarn, stroke: C.secondary, strokeDasharray: '3 3' })),
     swatch('night', box({ fill: C.primary, fillOpacity: 0.07, stroke: C.stroke })),
     swatch('now', jsx('line', { x1: 8, x2: 8, y1: 0, y2: 10, style: { stroke: C.primary, strokeWidth: 1.5 } }))
   )

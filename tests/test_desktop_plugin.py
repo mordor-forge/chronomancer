@@ -59,8 +59,13 @@ def test_has_no_hardcoded_colours():
     # borders and shadows take their colour from the table too
     for shorthand in re.findall(r"\b(?:border(?:Top|Bottom|Left|Right)?|boxShadow|outline)\s*:\s*(`[^`]*`|'[^']*')", code):
         assert "${C." in shorthand or shorthand in ("'none'",) or re.fullmatch(r"'?0'?", shorthand), shorthand
+    # Text is always the primary tone: the app's secondary and tertiary tones are under 4.5:1 in some
+    # themes (Catppuccin Latte). The secondary tone is used for shapes only (3:1).
+    text_styles = re.findall(r"\b(?:color)\s*:\s*(C\.\w+)", code)
+    assert set(text_styles) <= {"C.primary", "C.secondary", "C.green", "C.yellow", "C.red"}
+    assert "C.tertiary" not in code and "svgText(10, 'secondary'" not in code
     assert set(re.findall(r"var\((--[\w-]+)[,)]", code)) <= {
-        "--ui-text-primary", "--ui-text-secondary", "--ui-text-tertiary", "--ui-stroke-secondary",
+        "--ui-text-primary", "--ui-text-secondary", "--ui-stroke-secondary",
         "--ui-accent", "--ui-green", "--ui-yellow", "--ui-red", "--dt-font-mono"}
 
 
