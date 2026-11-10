@@ -335,3 +335,17 @@ def test_audit_moments_are_written_in_the_plugins_time_zone_like_the_spans(h):
     assert body["decisions"][0]["when"].endswith(" CEST") and h.actions.span(w).endswith(" CEST")
     h.actions.tz = lambda: None  # no zone configured: UTC, as the spans do
     assert h.api.audit()[1]["audit"][0]["when"].endswith(" UTC")
+
+
+@pytest.mark.parametrize("raw,mode", [(None, "enforce"), ("warn", "warn"), (" OFF ", "off"), (False, "off"),
+                                      ("typo", "enforce"), (0, "enforce")])
+def test_list_reports_the_guard_mode_as_the_guard_reads_it(h, raw, mode):
+    """The door must not say "blocked" when the guard only records or is off."""
+    from change_windows.desktop import guard_mode
+    settings = {} if raw is None else {"mode": raw}
+    assert guard_mode(lambda key, default=None: settings.get(key, default)) == mode
+
+    def broken(key, default=None):
+        raise RuntimeError("config unreadable")
+    assert guard_mode(broken) == "enforce"
+    assert h.api.windows()[1]["mode"] == "enforce"

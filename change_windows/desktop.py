@@ -40,6 +40,19 @@ def approval_enabled(setting: Callable[..., Any]) -> bool:
         return False
 
 
+def guard_mode(setting: Callable[..., Any]) -> str:
+    """``enforce``, ``warn`` or ``off``, read the way the guard reads it: the page must not say
+    "blocked" when the guard only records. An unknown or unreadable value is ``enforce``, as in the guard."""
+    try:
+        raw = setting("mode", "enforce")
+    except Exception:
+        return "enforce"
+    if raw is False:  # YAML 1.1 reads an unquoted ``mode: off`` as the boolean False
+        return "off"
+    value = str(raw).strip().lower()
+    return value if value in ("enforce", "warn", "off") else "enforce"
+
+
 def _error(status: int, message: str) -> Result:
     return status, {"detail": message}  # the key FastAPI and the Desktop client use for errors
 
@@ -52,6 +65,7 @@ class DesktopApi:
     def windows(self) -> Result:
         data = list_view(self.actions)
         data["approval"] = approval_enabled(self.actions.setting)
+        data["mode"] = guard_mode(self.actions.setting)
         return 200, data
 
     def audit(self) -> Result:

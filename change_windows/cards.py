@@ -10,20 +10,21 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import threading
 import time
+import unicodedata
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 TTL_S = 30.0
 _TITLE_MAX = 120
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁦-⁩]")
 
 
 def _text(value: Any, limit: int) -> str:
-    text = " ".join(_CONTROL.sub(" ", str(value or "")).split())
+    # Control and format characters (line breaks, bidi overrides, zero-width marks) become spaces.
+    raw = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in str(value or ""))
+    text = " ".join(raw.split())
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
