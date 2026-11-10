@@ -8,8 +8,8 @@ Approved time windows for production changes made by [Hermes Agent](https://gith
 > Chromium flow. The real Telegram phone/HTTPS check was waived
 > by the owner, not passed; browser tests use synthetic Telegram signatures. Real phone, HTTPS
 > routing and Telegram-signed initData remain unverified. The Desktop half is tested against
-> stand-ins for the Desktop SDK and over HTTP against its backend routes; it has not been run
-> inside the Hermes Desktop app yet.
+> stand-ins for the Desktop SDK and over HTTP against its backend routes, and was run once in an
+> isolated Hermes Desktop on Linux with synthetic data (see Limits for what that run covered).
 
 ## Why
 
@@ -158,7 +158,8 @@ which also lets the backend routes load), restart the gateway, and turn the Desk
 - **Status-bar chip.** The open window and its time left; else the next approved window; else
   nothing. Click it to open the page.
 - **Kanban card badges.** A card linked to a window shows the window's state and time
-  (for example "Open · 42 min left", "Window in 2 h").
+  (for example "Open · 42 min left", "Window in 2 h"). The board is Desktop's bundled Kanban
+  plugin, which is also off until you turn it on under **Capabilities → Plugins**.
 - **Palette command** "Open change windows".
 
 On a wide window the page is a table. When Desktop reports a narrow viewport
@@ -274,8 +275,12 @@ line.
   `plugins.isolation: in_process`. With no Telegram or with `host` isolation, the guard and tools
   still work, and a window can only be approved on the Hermes Desktop page (if `approval.desktop`
   is on); its cards are not released and no notice is sent.
-- **Desktop half not yet run in the app.** It is tested against stand-ins for the Desktop SDK,
-  not inside Hermes Desktop, so its look and theming are unverified. The status-bar chip keeps
+- **Desktop half: one run in the app.** Besides the tests against stand-ins for the Desktop SDK,
+  it was run once in an isolated Hermes Desktop on Linux (a v0.22.6-line build) against a Hermes
+  v0.23.0 gateway, with synthetic data: the page in light and dark mode, the narrow layout through
+  an emulated 390x844 viewport, the sidebar row, the status-bar chip, the Kanban badges, the
+  palette command and the three actions. Not checked: a real small window or touch screen, the
+  Hermes mobile app, macOS and Windows, custom themes, and a remote backend. The status-bar chip keeps
   the data fresh for the Kanban badges; if the chip is not mounted, badges update only while the
   page is open. After a profile switch the page can show the previous profile's windows for up
   to 7 seconds.

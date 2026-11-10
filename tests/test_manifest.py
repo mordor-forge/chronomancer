@@ -60,7 +60,11 @@ def test_desktop_approval_setting_and_trust_statement_are_documented():
                    "code running as your OS user can reach the local API", "403", "Close now stays"):
         assert phrase in desktop, phrase
     assert "mobile" not in desktop.lower()  # no claim about the Hermes mobile app
-    assert "has not been run\n> inside the Hermes Desktop app" in readme.split("## Why")[0]
+    status = readme.split("## Why")[0]
+    assert "run once in an\n> isolated Hermes Desktop" in status and "has not been run" not in readme
+    limits = readme.split("**Desktop half: one run in the app.**")[1].split("\n- **")[0]
+    for unchecked in ("touch screen", "Hermes mobile app", "macOS and Windows", "remote backend"):
+        assert unchecked in limits, unchecked
 
 
 def test_dashboard_manifest_points_at_the_backend_routes():
