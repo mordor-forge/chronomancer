@@ -17,7 +17,8 @@ from typing import Any, Callable
 
 from . import overlaps
 from .store import OverlapError, StoreError
-from .views import ACTIONS, IDEMPOTENCY_KEY, WINDOW_ID, audit_view, decisions_view, list_view, snapshot_view
+from .views import (ACTIONS, IDEMPOTENCY_KEY, WINDOW_ID, audit_view, decisions_view, guard_mode,  # noqa: F401
+                    list_view, snapshot_view)
 
 logger = logging.getLogger(__name__)
 
@@ -38,19 +39,6 @@ def approval_enabled(setting: Callable[..., Any]) -> bool:
     except Exception:
         logger.warning("change-windows: could not read %s; Desktop approval is off", APPROVAL_SETTING)
         return False
-
-
-def guard_mode(setting: Callable[..., Any]) -> str:
-    """``enforce``, ``warn`` or ``off``, read the way the guard reads it: the page must not say
-    "blocked" when the guard only records. An unknown or unreadable value is ``enforce``, as in the guard."""
-    try:
-        raw = setting("mode", "enforce")
-    except Exception:
-        return "enforce"
-    if raw is False:  # YAML 1.1 reads an unquoted ``mode: off`` as the boolean False
-        return "off"
-    value = str(raw).strip().lower()
-    return value if value in ("enforce", "warn", "off") else "enforce"
 
 
 def _error(status: int, message: str) -> Result:

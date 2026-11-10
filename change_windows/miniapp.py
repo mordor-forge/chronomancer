@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from .initdata import InitDataError, verify_ed25519
 from . import overlaps
 from .store import OverlapError, StoreError
-from .views import IDEMPOTENCY_KEY, audit_view, list_view, snapshot_view, window_view
+from .views import IDEMPOTENCY_KEY, audit_view, guard_mode, list_view, snapshot_view, window_view
 
 logger = logging.getLogger(__name__)
 READ_AGE_S, WRITE_AGE_S = 3600, 600
@@ -97,7 +97,11 @@ def create_app(actions: Any, bot_id: Callable[[], int | None], *, wake: Callable
         return web.Response(text=html, content_type="text/html", headers={"Content-Security-Policy": csp})
 
     async def windows(request: Any) -> Any:
-        return web.json_response(await asyncio.to_thread(list_view, actions))
+        def read() -> Any:
+            data = list_view(actions)
+            data["mode"] = guard_mode(actions.setting)  # the door must not say "blocked" in warn or off mode
+            return data
+        return web.json_response(await asyncio.to_thread(read))
 
     async def detail(request: Any) -> Any:
         def read() -> Any:
