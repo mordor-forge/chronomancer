@@ -302,7 +302,8 @@ def test_audit_is_metadata_only_and_lists_decisions_with_their_channel(h):
     h.api.act(c.id, "approve", KEY + "c")
     status, body = h.api.audit()
     assert status == 200
-    assert [set(row) for row in body["audit"]] == [{"id", "ts", "verdict", "tool", "rule_ids", "scopes", "window_id"}]
+    assert [set(row) for row in body["audit"]] == [
+        {"id", "ts", "verdict", "tool", "rule_ids", "scopes", "window_id", "when"}]
     assert "SYNTHETIC-PREVIEW" not in json.dumps(body)
     assert [(d["window_id"], d["state"], d["decided_via"], d["decided_by"]) for d in body["decisions"]] == [
         (c.id, "approved", "desktop", "desktop"),
@@ -316,3 +317,21 @@ def test_a_failing_wake_does_not_fail_a_committed_action(store):
     h.api.wake = lambda: 1 / 0
     w = h.propose()
     assert h.api.act(w.id, "approve", KEY)[0] == 200 and h.store.get(w.id).state == "approved"
+
+
+def test_audit_moments_are_written_in_the_plugins_time_zone_like_the_spans(h):
+    """Found in the real app: the page showed these in the app's own zone, next to spans in the plugin's."""
+    from datetime import datetime, timedelta
+    zone = timezone(timedelta(hours=2), "CEST")
+    h.actions.tz = lambda: zone
+    w = h.propose()
+    h.store.record_audit(now=NOW, verdict="blocked", tool="terminal", rule_ids=["k8s-write"], scopes=["k8s-prod"],
+                         preview="", session_id="s1", task_id="t1")
+    h.now = NOW + 60
+    h.api.act(w.id, "approve", KEY)
+    _, body = h.api.audit()
+    assert body["audit"][0]["when"] == datetime.fromtimestamp(NOW, zone).strftime("%a %d %b %H:%M CEST")
+    assert body["decisions"][0]["when"] == datetime.fromtimestamp(NOW + 60, zone).strftime("%a %d %b %H:%M CEST")
+    assert body["decisions"][0]["when"].endswith(" CEST") and h.actions.span(w).endswith(" CEST")
+    h.actions.tz = lambda: None  # no zone configured: UTC, as the spans do
+    assert h.api.audit()[1]["audit"][0]["when"].endswith(" UTC")

@@ -12,6 +12,7 @@ removes permission.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .store import StoreError
@@ -54,7 +55,16 @@ class DesktopApi:
 
     def audit(self) -> Result:
         store = self.actions.store
-        return 200, {"audit": audit_view(store), "decisions": decisions_view(store)}
+        return 200, {"audit": [{**row, "when": self._stamp(row["ts"])} for row in audit_view(store)],
+                     "decisions": [{**d, "when": self._stamp(d["decided_at"])} for d in decisions_view(store)]}
+
+    def _stamp(self, ts: Any) -> str:
+        """A moment in the plugin's time zone, written like the window spans ("Tue 10 Nov 13:57 UTC").
+        The page would otherwise show these in the app's own zone, next to spans in the plugin's."""
+        if not isinstance(ts, int) or isinstance(ts, bool):
+            return ""
+        zone = self.actions.tz() or timezone.utc
+        return datetime.fromtimestamp(ts, zone).strftime("%a %d %b %H:%M %Z").rstrip()
 
     def act(self, window_id: Any, action: Any, key: Any) -> Result:
         if action not in ACTIONS:
