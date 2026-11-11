@@ -38,7 +38,7 @@ Read these first.
 ## Install
 
 ```bash
-hermes plugins install Gdetrane/hermes-change-windows
+hermes plugins install mordor-forge/chronomancer
 hermes -p <profile> plugins enable chronomancer
 hermes gateway restart
 ```
@@ -109,7 +109,8 @@ A tool never raises. A refusal is `{"ok": false, "error": "<a sentence>"}`.
   Shimmering: the card runs. Faded: done. Red dashed: missed or not released. A clash is hatched on
   both bars and joined by a red dashed line. Drag a bar to move its slot in steps of 15 minutes, or
   focus it and press the left or right arrow key.
-- **Unplanned**: the open cards without a slot. Drag one onto the timeline.
+- **Unplanned**: the open cards without a slot. Drag one onto the timeline. A long list scrolls in
+  place, and a field narrows it by title, card id, status, profile or label.
 - **Selected card**: its state in one sentence, its clashes, the next free start, Cast now (asks
   first), Move, Pin, Unplan, and its labels.
 - **Changes**: the newest moves; label changes on request.
