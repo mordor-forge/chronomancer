@@ -1,87 +1,42 @@
-name: change-windows
+name: chronomancer
 version: 0.1.0
 description: >-
-  Approved time windows for production changes by agents. A pre_tool_call guard blocks
-  production-write tool calls (kubectl apply, helm upgrade, tofu apply, git push,
-  PR merges, configured MCP tools) unless an owner-approved window for their scope is open.
-  Agents propose windows; the owner approves, declines or closes them with Telegram buttons,
-  the Telegram Mini App or a Hermes Desktop page.
-  Linked Kanban cards are released when a window opens.
+  A shared plan for the Kanban cards of every profile on a gateway. Give a card a slot
+  (a planned start and an estimate): the plugin parks the card and releases it at the start,
+  with no cron job. An orchestrator agent plans through five tools; the owner plans on a
+  Hermes Desktop timeline with a lane per profile. Slots that overlap and share a
+  one-at-a-time label are shown as clashes. The plan advises: it never blocks a move.
 author: Giorgio De Trane
 license: MIT
 homepage: https://github.com/Gdetrane/hermes-change-windows
 manifest_version: 2
 requires_hermes: ">=0.22.7"
-tags: [safety, guardrails, gitops, kubernetes, kanban, telegram]
+tags: [kanban, planning, scheduling, orchestration, desktop]
 provides_tools:
-  - window_propose
-  - window_list
-  - window_next
-  - window_close
-provides_hooks:
-  - pre_tool_call
+  - chrono_plan
+  - chrono_slot
+  - chrono_now
+  - chrono_clear
+  - chrono_label
+provides_hooks: []
 config_schema:
-  mode:
+  board:
     type: str
-    choices: [enforce, warn, "off"]
-    default: enforce
-    label: Guard mode
-    description: "enforce blocks matched calls outside a window; warn only records them; off disables the guard."
+    default: ""
+    label: Kanban board
+    description: "Slug of the board to plan. Empty = the active board."
   timezone:
     type: str
     default: ""
     label: Time zone
     description: "IANA zone for parsing and showing times, e.g. Europe/Prague. Empty = the system zone by name (TZ, then /etc/localtime)."
-  rules:
-    type: list
-    default: []
-    label: Extra rules
-    description: "Extra guard rules: {id, scope, tools: [fnmatch], match: regex, field: command|code|*}."
-  disabled_rules:
-    type: list
-    default: []
-    label: Disabled default rules
-    description: "Ids of default rules to turn off (self-protect cannot be turned off)."
-  approver_telegram_ids:
-    type: list
-    default: []
-    label: Approvers (Telegram user ids)
-    description: "Telegram user ids that may approve, decline and close windows and read /windows. Empty = nobody can approve."
-  approval.desktop:
+  default_estimate_minutes:
+    type: int
+    default: 60
+    label: Default estimate (minutes)
+    description: "The estimate of a new slot when none is given."
+  comment_on_release:
     type: bool
     default: true
-    label: Allow approval in Hermes Desktop
-    description: "true: Approve and Decline also work on the Hermes Desktop page, which trusts the local Desktop session (no Telegram signature). false: only Telegram and the Mini App can approve; the Desktop page still shows windows and can close them. Any value other than true counts as false."
-  owner_chat_id:
-    type: int
-    default: 0
-    label: Owner chat id
-    description: "Chat that gets proposal messages. 0 = the private chat of the first approver."
-  max_window_hours:
-    type: float
-    default: 8
-    label: Longest window (hours)
-  audit_command_preview:
-    type: bool
-    default: false
-    label: Store masked command text in the audit log
-    description: "Off: audit rows keep tool, rule ids, scope and size only. On: a masked preview of matched terminal commands is stored; masking is best effort, so secrets can remain."
-  miniapp_url:
-    type: str
-    default: ""
-    label: Mini App HTTPS URL
-    description: "Your HTTPS URL pointing to the loopback listener. Empty disables the Mini App. Open list appears only in private chats."
-  miniapp_host:
-    type: str
-    default: "127.0.0.1"
-    label: Mini App listen address
-    description: "Loopback address only. Publish HTTPS through your own reverse proxy."
-  miniapp_port:
-    type: int
-    default: 18782
-    label: Mini App listen port
-  telegram_bot_id:
-    type: int
-    default: 0
-    label: Public Telegram bot id
-    description: "0 discovers the public id from the initialized Telegram bot. This is not a bot token."
+    label: Comment on the card at release
+    description: "true: when the plugin releases a card it adds one fixed-text comment with the planned start. false: no comment."

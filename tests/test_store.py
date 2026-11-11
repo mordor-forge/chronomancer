@@ -1,204 +1,95 @@
-import pytest
-
-from change_windows.store import Store, StoreError
-
-H = 3600
+"""The plan store: slots, the release lease, labels and the change log."""
+from chronomancer.store import FAILED, PLANNED, RELEASED
 
 
-TIMED = ("remind", "start", "end")  # the announce effect of a proposal is tested on its own
+def put(store, task_id="t_1", start=1000, est=600, **kw):
+    return store.put_slot("", task_id, start_ts=start, estimate_s=est, state=kw.pop("state", PLANNED),
+                          parked=kw.pop("parked", False), set_by=kw.pop("by", "owner"), now=kw.pop("now", 900), **kw)
 
 
-def mk(store, start, end, scope="k8s-prod", exclusive=True, presence=False):
-    w, conflicts = store.propose(name="w", scope=scope, start_ts=start, end_ts=end, reason="r",
-                                 proposed_by="agent:test", now=0, exclusive=exclusive, presence=presence)
-    return w, conflicts
+def test_a_slot_is_created_then_replaced_and_keeps_its_pin(store):
+    slot = put(store)
+    assert (slot.start_ts, slot.end_ts, slot.state, slot.pinned, slot.set_by) == (1000, 1600, PLANNED, False, "owner")
+    store.set_pinned("", "t_1", True)
+    moved = put(store, start=5000, est=1200, by="agent:assistant")
+    assert (moved.start_ts, moved.estimate_s, moved.pinned, moved.set_by) == (5000, 1200, True, "agent:assistant")
+    assert [s.task_id for s in store.slots("")] == ["t_1"] and store.slots("other") == []
+    assert store.delete_slot("", "t_1") and store.get_slot("", "t_1") is None
 
 
-def test_half_open_and_approval(store):
-    w, _ = mk(store, 1000, 1000 + H)
-    assert w.state == "pending" and not w.is_open(1500)
-    w = store.decide(w.id, approve=True, by="owner:1", now=10)
-    assert w.is_open(1000) and w.is_open(1000 + H - 1) and not w.is_open(1000 + H)
-    assert [x.id for x in store.open_windows("k8s-prod", 1500)] == [w.id]
-    assert store.open_windows("infra", 1500) == []
+def test_a_due_slot_is_leased_to_one_caller(store):
+    put(store, "t_1", start=1000)
+    put(store, "t_2", start=2000)
+    first = store.claim_due(1500, lease_s=60, max_attempts=3)
+    assert [(s.task_id, s.attempts) for s in first] == [("t_1", 1)]
+    assert store.claim_due(1510, lease_s=60, max_attempts=3) == []          # still leased
+    again = store.claim_due(1561, lease_s=60, max_attempts=3)               # the lease ran out
+    assert [(s.task_id, s.attempts) for s in again] == [("t_1", 2)]
 
 
-def test_conflicts_exclusive_vs_shared(store):
-    a, _ = mk(store, 0, 2 * H)
-    _, c = mk(store, H, 3 * H)
-    assert [x.id for x in c] == [a.id]
-    s1, _ = mk(store, 10 * H, 11 * H, exclusive=False)
-    _, c2 = mk(store, 10 * H, 11 * H, exclusive=False)
-    assert c2 == []  # two shared windows may overlap
-    _, c3 = mk(store, 2 * H, 3 * H, scope="infra")
-    assert c3 == []  # other scope
+def test_a_slot_stops_being_claimed_after_its_last_attempt(store):
+    put(store, start=1000)
+    for now in (1000, 1100, 1200):
+        assert len(store.claim_due(now, lease_s=60, max_attempts=3)) == 1
+    assert store.claim_due(1300, lease_s=60, max_attempts=3) == []
+    assert [s.task_id for s in store.exhausted(1300, lease_s=60, max_attempts=3)] == ["t_1"]
+    assert store.next_due_ts(max_attempts=3) is None
 
 
-def test_approve_refuses_overlap_with_approved(store):
-    a, _ = mk(store, 0, 2 * H)
-    store.decide(a.id, approve=True, by="owner:1", now=1)
-    b, _ = mk(store, H, 3 * H)
-    with pytest.raises(StoreError):
-        store.decide(b.id, approve=True, by="owner:1", now=2)
-    assert store.decide(b.id, approve=False, by="owner:1", now=3).state == "declined"
+def test_finish_closes_the_claimed_slot_once(store):
+    put(store, start=1000)
+    (slot,) = store.claim_due(1000, lease_s=60, max_attempts=3)
+    assert store.finish(slot, RELEASED, "released at its slot: ready", 1001) is True
+    done = store.get_slot("", "t_1")
+    assert (done.state, done.released_at, done.note) == (RELEASED, 1001, "released at its slot: ready")
+    assert store.finish(slot, FAILED, "late", 1002) is False
+    assert store.get_slot("", "t_1").state == RELEASED
 
 
-def test_presence_needs_check_in(store):
-    w, _ = mk(store, 0, H, presence=True)
-    w = store.decide(w.id, approve=True, by="owner:1", now=0)
-    assert not w.is_open(10)
-    assert store.check_in(w.id, by="owner:1", now=11).is_open(12)
+def test_finish_drops_its_result_when_the_slot_was_moved_meanwhile(store):
+    put(store, start=1000)
+    (slot,) = store.claim_due(1000, lease_s=60, max_attempts=3)
+    put(store, start=9000)                                       # the owner moved it during the release
+    assert store.finish(slot, RELEASED, "released", 1001) is False
+    moved = store.get_slot("", "t_1")
+    assert (moved.state, moved.start_ts, moved.attempts) == (PLANNED, 9000, 0)
 
 
-def test_close_removes_permission(store):
-    w, _ = mk(store, 0, H)
-    store.decide(w.id, approve=True, by="owner:1", now=0)
-    w = store.close(w.id, by="agent:test", reason="done", now=100)
-    assert w.state == "closed" and not w.is_open(200)
-    with pytest.raises(StoreError):
-        store.close(w.id, by="agent:test", reason="again", now=101)
+def test_next_due_and_recent_slots(store):
+    assert store.next_due_ts(max_attempts=3) is None
+    put(store, "t_1", start=5000)
+    put(store, "t_2", start=3000)
+    put(store, "t_old", start=100, state=RELEASED)
+    assert store.next_due_ts(max_attempts=3) == 3000
+    assert [s.task_id for s in store.slots("", since_ts=1000)] == ["t_2", "t_1"]   # the old finished slot is left out
+    assert store.prune_slots(1000) == 1 and len(store.slots("")) == 2
 
 
-def test_effects_claimed_once_across_store_instances(store, db_path):
-    import sqlite3
-
-    w, _ = mk(store, 1000, 2000)
-    store.ensure_effects(w, reminder_s=600)
-    store.ensure_effects(w, reminder_s=600)  # idempotent
-    other = Store(lambda: sqlite3.connect(db_path, timeout=5))
-    first = store.claim_due_effects(now=1000, kinds=TIMED)
-    second = other.claim_due_effects(now=1000, kinds=TIMED)
-    assert sorted(k for _, k, _ in first) == ["remind", "start"]
-    assert second == []
-    for wid, kind, _ in first:
-        store.finish_effect(wid, kind, "ok", now=1001)
-    assert [k for _, k, _ in other.claim_due_effects(now=2000, kinds=TIMED)] == ["end"]
+def test_labels_and_card_labels(store):
+    label = store.put_label("cluster:prod", exclusive=True, description="the production cluster", by="agent:assistant", now=10)
+    assert (label.exclusive, label.description, label.created_by) == (True, "the production cluster", "agent:assistant")
+    kept = store.put_label("cluster:prod", exclusive=None, description=None, by="owner", now=20)
+    assert (kept.exclusive, kept.description, kept.created_by) == (True, "the production cluster", "agent:assistant")
+    store.put_label("repo:web", exclusive=False, description=None, by="owner", now=20)
+    assert store.change_card_labels("", "t_1", add=["repo:web", "cluster:prod"]) == ["cluster:prod", "repo:web"]
+    assert store.change_card_labels("", "t_1", add=["repo:web"], remove=["cluster:prod"]) == ["repo:web"]
+    store.change_card_labels("", "t_2", add=["repo:web"])
+    assert store.card_labels("") == {"t_1": ["repo:web"], "t_2": ["repo:web"]}
+    assert store.delete_label("repo:web") and store.card_labels("") == {}
+    assert [l.name for l in store.labels()] == ["cluster:prod"]
 
 
-def test_audit_preview_is_capped(store):
-    store.record_audit(now=1, verdict="blocked", tool="terminal", rule_ids=["k8s-write"], scopes=["k8s-prod"],
-                       preview="x" * 1000)
-    row = store.audit_tail(1)[0]
-    assert row["verdict"] == "blocked" and len(row["preview"]) == 400
+def test_the_log_keeps_order_and_detail(store):
+    first = store.add_log(ts=10, actor="owner", action="plan", task_id="t_1", detail={"title": "A", "start": 100})
+    second = store.add_log(ts=20, actor="agent:assistant", action="move", task_id="t_1", detail={"from": 100, "start": 200})
+    assert [e.id for e in store.log_tail(10)] == [second, first]
+    assert [(e.actor, e.detail["start"]) for e in store.log_after(first)] == [("agent:assistant", 200)]
+    assert store.last_log_id() == second
+    assert store.prune_log(15) == 1 and [e.id for e in store.log_tail(10)] == [second]
 
 
-
-def test_concurrent_approvals_of_overlapping_exclusive_windows(db_path):
-    import sqlite3
-    import threading
-
-    def connect():
-        return sqlite3.connect(db_path, timeout=10)
-
-    s0 = Store(connect)
-    a, _ = s0.propose(name="a", scope="k8s-prod", start_ts=0, end_ts=2 * H, reason="r", proposed_by="x", now=0)
-    b, _ = s0.propose(name="b", scope="k8s-prod", start_ts=H, end_ts=3 * H, reason="r", proposed_by="x", now=0)
-    barrier = threading.Barrier(2)
-    results = {}
-
-    def approve(wid):
-        st = Store(connect)
-        barrier.wait()
-        try:
-            results[wid] = st.decide(wid, approve=True, by="owner:1", now=5).state
-        except StoreError as exc:
-            results[wid] = f"refused: {exc}"
-
-    threads = [threading.Thread(target=approve, args=(w.id,)) for w in (a, b)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert sorted(v == "approved" for v in results.values()) == [False, True]
-
-
-def test_close_after_concurrent_approval_still_removes_permission(store):
-    w, _ = mk(store, 0, H)
-    store.decide(w.id, approve=True, by="owner:1", now=1)  # approved between the agent's read and close
-    closed = store.close(w.id, by="agent:test", reason="done", now=10)
-    assert closed.state == "closed" and not closed.is_open(11)
-
-
-def test_effect_lease_survives_a_crash_and_is_bounded(store):
-    w, _ = mk(store, 1000, 2000)
-    store.ensure_effects(w, reminder_s=600)
-    first = store.claim_due_effects(now=1000, lease_s=300, kinds=TIMED)
-    assert sorted(k for _, k, _ in first) == ["remind", "start"]
-    assert store.claim_due_effects(now=1100, lease_s=300, kinds=TIMED) == []          # lease still held
-    store.finish_effect(w.id, "remind", "sent", now=1100)
-    again = store.claim_due_effects(now=1400, lease_s=300, kinds=TIMED)               # crashed "start" is retried
-    assert [k for _, k, _ in again] == ["start"]
-    store.claim_due_effects(now=1800, lease_s=300, kinds=TIMED)                       # attempt 3
-    assert store.claim_due_effects(now=2600, lease_s=300, kinds=TIMED) == [(w.id, "end", 2000)]
-    assert store.failed_effects(1800, lease_s=300) == []                  # last lease still live
-    assert (w.id, "start", 3) in store.failed_effects(2600, lease_s=300)
-
-
-
-def test_v1_database_is_migrated_in_place(db_path):
-    import sqlite3
-
-    conn = sqlite3.connect(db_path)
-    conn.executescript("""
-        CREATE TABLE effects (window_id TEXT NOT NULL, kind TEXT NOT NULL, due_ts INTEGER NOT NULL,
-                              done_ts INTEGER, result TEXT, PRIMARY KEY (window_id, kind));
-        INSERT INTO effects VALUES ('WOLD', 'start', 10, NULL, NULL);
-    """)
-    conn.commit()
-    conn.close()
-    s = Store(lambda: sqlite3.connect(db_path, timeout=5))
-    assert s.claim_due_effects(now=100) == [("WOLD", "start", 10)]
-
-
-
-def test_concurrent_v1_migration_is_serialized(db_path):
-    import sqlite3
-    import threading
-
-    conn = sqlite3.connect(db_path)
-    conn.executescript("""
-        CREATE TABLE effects (window_id TEXT NOT NULL, kind TEXT NOT NULL, due_ts INTEGER NOT NULL,
-                              done_ts INTEGER, result TEXT, PRIMARY KEY (window_id, kind));
-    """)
-    conn.commit()
-    conn.close()
-    errors = []
-    barrier = threading.Barrier(4)
-
-    def open_store():
-        barrier.wait()
-        try:
-            Store(lambda: sqlite3.connect(db_path, timeout=10)).audit_tail(1)
-        except Exception as exc:  # report, do not hide
-            errors.append(repr(exc))
-
-    threads = [threading.Thread(target=open_store) for _ in range(4)]
-    for th in threads:
-        th.start()
-    for th in threads:
-        th.join()
-    assert errors == []
-    cols = {r[1] for r in sqlite3.connect(db_path).execute("PRAGMA table_info(effects)")}
-    assert {"claimed_ts", "attempts"} <= cols
-
-
-def test_purge_previews(store):
-    store.record_audit(now=1, verdict="blocked", tool="terminal", rule_ids=["k8s-write"], scopes=["k8s-prod"],
-                       preview="old preview text")
-    store.record_audit(now=5, verdict="blocked", tool="terminal", rule_ids=["k8s-write"], scopes=["k8s-prod"],
-                       preview="newer preview")
-    assert store.purge_previews(before_ts=3) == 1
-    assert [r["preview"] for r in store.audit_tail(2)] == ["newer preview", "[purged]"]
-    assert store.purge_previews() == 1
-
-
-def test_a_proposal_queues_one_announce_effect(store):
-    w, _ = mk(store, 1000, 2000)
-    assert store.claim_due_effects(now=0, kinds=("announce",)) == [(w.id, "announce", 0)]
-    assert store.claim_due_effects(now=10, kinds=("announce",)) == []  # leased
-    store.finish_effect(w.id, "announce", "sent", now=11)
-    assert store.claim_due_effects(now=1000, kinds=("announce",)) == []
-    # an approved-at-creation window (emergency path) is not announced as a proposal
-    store.propose(name="e", scope="infra", start_ts=0, end_ts=600, reason="r", proposed_by="owner", now=0,
-                  state="approved", decided_by="telegram:1")
-    assert store.claim_due_effects(now=5000, kinds=("announce",)) == []
+def test_meta(store):
+    assert store.get_meta("seen:owner", "0") == "0"
+    store.set_meta("seen:owner", "7")
+    store.set_meta("seen:owner", "9")
+    assert store.get_meta("seen:owner") == "9"

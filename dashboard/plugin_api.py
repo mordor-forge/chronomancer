@@ -1,18 +1,24 @@
-"""Backend routes for the Hermes Desktop half, mounted at ``/api/plugins/change-windows/``.
+"""Backend routes for the Hermes Desktop half, mounted at ``/api/plugins/chronomancer/``.
 
-    GET  /windows                         windows from today to seven days ahead, and whether
-                                          Desktop approval is on
-    GET  /audit                           recent matched calls (metadata only) and recent decisions
-    POST /windows/{id}/approve|decline|close    body: {"key": "<idempotency key>"}
+    GET    /plan?horizon=day|2d|week|<hours>     the plan: lanes, slots, clashes, tray, labels, log
+    POST   /cards/{id}/slot    {"start": <unix seconds or ISO 8601>, "estimate_minutes"?, "dry_run"?}
+    POST   /cards/{id}/now
+    DELETE /cards/{id}/slot
+    POST   /cards/{id}/pin     {"pinned": true|false}
+    POST   /cards/{id}/labels  {"add": [...], "remove": [...]}
+    POST   /labels             {"name", "exclusive"?, "description"?}
+    DELETE /labels/{name}
+
+Every route takes an optional ``board`` query parameter.
 
 Hermes authenticates every request before a route runs (the Desktop session's native grant, or a
 signed-in dashboard session) and scopes it to the requested profile. These routes add no identity
-of their own: see ``change_windows/desktop.py`` for the trust statement and for the logic. This
-file only maps HTTP to it.
+of their own: see ``chronomancer/desktop.py`` for the trust statement and for the logic. This file
+only maps HTTP to it.
 
-Hermes imports this file by path, outside the plugin's package, so the core package is found
-through the loaded agent half (same process: the Telegram scheduler is woken after an action) or
-loaded from this checkout.
+Hermes imports this file by path, outside the plugin's package. The core package is found through
+the loaded agent half (same process, same planner and timer) or loaded from this checkout. Without
+the agent half the plan can be read, but the Kanban board cannot.
 """
 from __future__ import annotations
 
@@ -29,9 +35,9 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_NAME = "change-windows"
+PLUGIN_NAME = "chronomancer"
 _ROOT = Path(__file__).resolve().parents[1]
-_CORE_NAME = "hermes_change_windows_core"
+_CORE_NAME = "hermes_chronomancer_core"
 _LOCK = threading.Lock()
 _APIS: dict[str, Any] = {}
 
@@ -39,22 +45,22 @@ router = APIRouter()
 
 
 def _core_package() -> str:
-    """Import name of this checkout's ``change_windows`` package."""
+    """Import name of this checkout's ``chronomancer`` package."""
     entry = _ROOT / "__init__.py"
     for name, module in list(sys.modules.items()):
         if not name.startswith("hermes_plugins.") or name.count(".") != 1:
             continue
         try:
             if Path(getattr(module, "__file__", "") or "").resolve() == entry:
-                return f"{name}.change_windows"
+                return f"{name}.chronomancer"
         except OSError:
             continue
     if _CORE_NAME not in sys.modules:
-        package_dir = _ROOT / "change_windows"
+        package_dir = _ROOT / "chronomancer"
         spec = importlib.util.spec_from_file_location(
             _CORE_NAME, package_dir / "__init__.py", submodule_search_locations=[str(package_dir)])
         if spec is None or spec.loader is None:
-            raise ImportError("change-windows core package not found")
+            raise ImportError("chronomancer core package not found")
         module = importlib.util.module_from_spec(spec)
         sys.modules[_CORE_NAME] = module
         try:
@@ -79,7 +85,7 @@ def _lookup(tree: Any, key: str, missing: Any) -> Any:
 
 
 def _setting(key: str, default: Any = None) -> Any:
-    """``plugins.entries.change-windows.settings.<key>`` of the request's profile, as
+    """``plugins.entries.chronomancer.settings.<key>`` of the request's profile, as
     ``ctx.get_config`` reads it (with the legacy ``config`` subtree as a fallback)."""
     from hermes_cli import config as hermes_config
 
@@ -96,19 +102,22 @@ def _setting(key: str, default: Any = None) -> Any:
 
 
 def _api() -> Any:
-    """One API object per profile data directory (the store prepares its schema once per file)."""
+    """The Desktop API for the request's profile: the agent half's planner when it is loaded in
+    this process, else a planner of its own that cannot reach the board."""
     from plugins.plugin_storage import plugin_data_dir, plugin_db
 
-    key = str(plugin_data_dir(PLUGIN_NAME))
+    data_dir = plugin_data_dir(PLUGIN_NAME)
+    key = str(data_dir)
+    core = _core_package()
+    runtime, desktop = (importlib.import_module(f"{core}.{name}") for name in ("runtime", "desktop"))
     with _LOCK:
+        active = runtime.get(key)
+        if active is None:
+            active = runtime.build(data_dir, dispatch=None, read_setting=_setting, timer=False,
+                                   prepare=lambda filename: plugin_db(PLUGIN_NAME, filename))
         api = _APIS.get(key)
-        if api is None:
-            core = _core_package()
-            store_mod, tg, desktop, timezones = (importlib.import_module(f"{core}.{name}")
-                                                 for name in ("store", "tg", "desktop", "timezones"))
-            actions = tg.Actions(store_mod.Store(lambda: plugin_db(PLUGIN_NAME)), setting=_setting,
-                                 tz=lambda: timezones.local_tz(_setting("timezone", None)))
-            api = _APIS[key] = desktop.DesktopApi(actions, wake=tg.wake_all)
+        if api is None or api.planner is not active.planner:
+            api = _APIS[key] = desktop.DesktopApi(active.planner, refresh=active.settings.refresh)
         return api
 
 
@@ -117,23 +126,47 @@ def _respond(call: Callable[[Any], tuple[int, dict[str, Any]]]) -> JSONResponse:
         status, body = call(_api())
     except Exception as exc:
         # The type only: a store or config error can carry paths or values.
-        logger.warning("change-windows: Desktop request failed (%s)", type(exc).__name__)
-        status, body = 503, {"detail": "The window store is unavailable; retry shortly."}
+        logger.warning("chronomancer: Desktop request failed (%s)", type(exc).__name__)
+        status, body = 503, {"detail": "The plan is unavailable; retry shortly."}
     return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
 
 
 # Plain ``def`` handlers: FastAPI runs them in a worker thread, so SQLite never blocks the gateway loop.
-@router.get("/windows")
-def windows() -> JSONResponse:
-    return _respond(lambda api: api.windows())
+@router.get("/plan")
+def plan(horizon: str = "", board: str = "") -> JSONResponse:
+    return _respond(lambda api: api.plan(horizon, board))
 
 
-@router.get("/audit")
-def audit() -> JSONResponse:
-    return _respond(lambda api: api.audit())
+@router.post("/cards/{task_id}/slot")
+def set_slot(task_id: str, body: Any = Body(default=None), board: str = "") -> JSONResponse:
+    return _respond(lambda api: api.set_slot(task_id, body, board))
 
 
-@router.post("/windows/{window_id}/{action}")
-def act(window_id: str, action: str, body: Any = Body(default=None)) -> JSONResponse:
-    key = body.get("key") if isinstance(body, dict) else None
-    return _respond(lambda api: api.act(window_id, action, key))
+@router.delete("/cards/{task_id}/slot")
+def clear_slot(task_id: str, board: str = "") -> JSONResponse:
+    return _respond(lambda api: api.clear(task_id, board))
+
+
+@router.post("/cards/{task_id}/now")
+def run_now(task_id: str, board: str = "") -> JSONResponse:
+    return _respond(lambda api: api.now(task_id, board))
+
+
+@router.post("/cards/{task_id}/pin")
+def pin(task_id: str, body: Any = Body(default=None), board: str = "") -> JSONResponse:
+    return _respond(lambda api: api.pin(task_id, body, board))
+
+
+@router.post("/cards/{task_id}/labels")
+def tag(task_id: str, body: Any = Body(default=None), board: str = "") -> JSONResponse:
+    return _respond(lambda api: api.tag(task_id, body, board))
+
+
+@router.post("/labels")
+def label(body: Any = Body(default=None)) -> JSONResponse:
+    return _respond(lambda api: api.label(body))
+
+
+@router.delete("/labels/{name:path}")
+def drop_label(name: str) -> JSONResponse:
+    return _respond(lambda api: api.drop_label(name))

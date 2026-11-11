@@ -1,119 +1,165 @@
+"""The orchestrator's tools: JSON in, JSON out, never an exception."""
 import json
 
-from change_windows.tools import Tools
+import pytest
 
-NOW = 1_800_000_000
+from chronomancer.planner import OWNER, PlanError
+from chronomancer.tools import SCHEMAS, Tools, parse_time
+from conftest import HOUR, NOW, ZONE, at
 
-
-def make(store):
-    return Tools(store, settings=lambda k, d=None: d, tz=lambda: None, actor=lambda: "agent:test", clock=lambda: NOW)
-
-
-def call(fn, **args):
-    return json.loads(fn(args))
+AGENT = "agent:assistant"
 
 
-def iso(ts):
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(ts, timezone.utc).isoformat()
+@pytest.fixture
+def tools(planner, clock):
+    return Tools(planner, actor=lambda: AGENT, clock=clock)
 
 
-def test_propose_is_pending_and_flags_conflicts(store):
-    t = make(store)
-    a = call(t.propose, name="a", scope="k8s-prod", start=iso(NOW + 3600), duration_minutes=60, reason="upgrade")
-    assert a["ok"] and a["window"]["state"] == "pending" and a["conflicts"] == []
-    b = call(t.propose, name="b", scope="k8s-prod", start=iso(NOW + 3600), end=iso(NOW + 5400), reason="rotate",
-             cards=["t_ab12cd34"])
-    assert [c["id"] for c in b["conflicts"]] == [a["window"]["id"]]
-    assert b["window"]["cards"] == [{"task_id": "t_ab12cd34", "board": ""}]
+def call(handler, **args):
+    return json.loads(handler(args))
 
 
-def test_propose_validation(store):
-    t = make(store)
-    base = dict(name="x", scope="k8s-prod", reason="r")
-    assert not call(t.propose, **base, start=iso(NOW - 3600), duration_minutes=10)["ok"]
-    assert not call(t.propose, **base, start=iso(NOW + 60), duration_minutes=60 * 24)["ok"]
-    assert not call(t.propose, **{**base, "scope": "_self"}, start=iso(NOW + 60), duration_minutes=10)["ok"]
-    assert not call(t.propose, **{**base, "scope": "Bad Scope"}, start=iso(NOW + 60), duration_minutes=10)["ok"]
-    assert not call(t.propose, **base, start=iso(NOW + 60), duration_minutes=10, cards=["rm -rf"])["ok"]
-    assert not call(t.propose, **base, start="tomorrow", duration_minutes=10)["ok"]
+def test_times_are_iso_or_a_delay():
+    assert parse_time("2026-11-11T14:00", ZONE, NOW) == at(14)                  # read in the plugin's zone
+    assert parse_time("2026-11-11T14:00+00:00", ZONE, NOW) == at(15)            # an offset wins
+    assert parse_time("2026-11-11T13:00Z", ZONE, NOW) == at(14)
+    assert [parse_time(v, ZONE, NOW) - NOW for v in ("+90m", "+2h", "+1d", "+ 15 min", "now")] == [5400, 7200, 86400, 900, 0]
+    assert parse_time(at(14), ZONE, NOW) == at(14)                              # the Desktop page sends seconds
+    for bad in ("", "tomorrow", None, True, "+2w"):
+        with pytest.raises(PlanError):
+            parse_time(bad, ZONE, NOW)
 
 
-def test_next_and_close(store):
-    t = make(store)
-    w = call(t.propose, name="a", scope="k8s-prod", start=iso(NOW + 60), duration_minutes=30, reason="r")["window"]
-    nxt = call(t.next, scope="k8s-prod")
-    assert nxt["open"] == [] and nxt["next"] is None and [p["id"] for p in nxt["pending"]] == [w["id"]]
-    closed = call(t.close, id=w["id"], reason="not needed")
-    assert closed["window"]["state"] == "cancelled"
+def test_slot_plans_a_card_and_reports_what_happened(tools, kanban):
+    kanban.add("t_1", "Upgrade ingress")
+    out = call(tools.slot, card="t_1", start="2026-11-11T14:00", estimate_minutes=90)
+    assert out["ok"] and kanban.status("t_1") == "scheduled"
+    assert out["slot"] == {"start": "2026-11-11T14:00+01:00", "end": "2026-11-11T15:30+01:00", "start_ts": at(14),
+                           "estimate_minutes": 90, "pinned_by_owner": False, "state": "planned"}
+    assert out["message"] == ('Planned "Upgrade ingress" for Wed 11 Nov 14:00 to 15:30. '
+                              "The card was ready and is parked until then.")
+    assert (out["action"], out["card"], out["status_before"]) == ("plan", "t_1", "ready")
 
 
-def test_no_tool_can_approve():
-    from change_windows.tools import SCHEMAS
-    assert not any("approve" in s["name"] or "open" in s["name"] for s in SCHEMAS)
+def test_slot_reports_a_clash_and_the_next_free_start(tools, kanban, planner):
+    kanban.add("t_a", "Upgrade ingress", status="blocked", assignee="builder")
+    kanban.add("t_b", "Rotate database keys", status="blocked", assignee="keeper")
+    out = call(tools.label, label="cluster:prod", one_at_a_time=True, description="the production cluster",
+               cards=["t_a", "t_b"])
+    assert out == {"ok": True, "label": "cluster:prod", "one_at_a_time": True, "description": "the production cluster",
+                   "cards": {"t_a": ["cluster:prod"], "t_b": ["cluster:prod"]}}
+    call(tools.slot, card="t_a", start="+4h", estimate_minutes=120)
+    out = call(tools.slot, card="t_b", start="+5h", estimate_minutes=60, dry_run=True)
+    assert out["action"] == "preview" and planner.store.get_slot("", "t_b") is None
+    assert out["clashes"] == ['Clashes with "Upgrade ingress" (builder, Wed 11 Nov 14:00 to 16:00): both carry '
+                              "cluster:prod, which allows one card at a time. They overlap for 1 h."]
+    assert out["next_free_start"] == "2026-11-11T16:00+01:00"
+    assert out["message"].endswith("It clashes with 1 other slot. The next start without a clash is Wed 11 Nov 16:00.")
 
 
-def test_no_registered_tool_can_approve_or_decline_with_desktop_approval_on(plugin_entry, tmp_path, monkeypatch):
-    """Desktop approval (approval.desktop, default on) adds an HTTP route for the owner, not a tool.
-    Every registered tool is called with approval-shaped arguments; none may reach a decision."""
-    import sqlite3
-
-    from change_windows.store import Store
-
-    ctx = plugin_entry({"approval.desktop": True})
-    assert sorted(ctx.tools) == ["window_close", "window_list", "window_next", "window_propose"]
-    store = Store(lambda: sqlite3.connect(tmp_path / "data.db", timeout=5))
-    decisions = []
-    monkeypatch.setattr(Store, "_decide", lambda self, *a, **k: decisions.append((a, k)))
-    for name, handler in ctx.tools.items():
-        window, _ = store.propose(name=f"for {name}", scope="k8s-prod", start_ts=NOW * 2, end_ts=NOW * 2 + 600,
-                                  reason="r", proposed_by="agent:test", now=NOW)
-        handler({"id": window.id, "window_id": window.id, "action": "approve", "approve": True, "state": "approved",
-                 "decision": "approve", "decided_by": "desktop", "decided_via": "desktop", "channel": "desktop",
-                 "scope": "k8s-prod", "reason": "approve it", "key": "k" * 20})
-        after = store.get(window.id)
-        assert after.state in ("pending", "cancelled") and after.decided_by is None and after.decided_via is None
-    assert decisions == []
+def test_refusals_come_back_as_errors_not_exceptions(tools, kanban, planner):
+    kanban.add("t_1", status="running")
+    assert call(tools.slot, card="t_1", start="+1h") == {
+        "ok": False, "error": '"Card t_1" is running now. A running card has no start to plan.'}
+    assert "not a time" in call(tools.slot, card="t_1", start="soon")["error"]
+    assert "whole number" in call(tools.slot, card="t_1", start="+1h", estimate_minutes="60")["error"]
+    assert "not on the board" in call(tools.now, card="t_9")["error"]
+    assert "has no slot" in call(tools.clear, card="t_1")["error"]
+    assert "A card id looks like" in call(tools.slot, start="+1h")["error"]
+    assert "true or false" in call(tools.label, label="x", one_at_a_time="yes")["error"]
+    assert json.loads(tools.slot(None))["ok"] is False and json.loads(tools.plan("nonsense"))["ok"] is True
 
 
-def test_agent_cannot_propose_a_window_that_needs_a_check_in(store):
-    # No surface lets the owner check in yet, so such a window could never open.
-    from change_windows.tools import PROPOSE
-    assert "presence_required" not in PROPOSE["parameters"]["properties"]
-    t = make(store)
-    w = call(t.propose, name="a", scope="k8s-prod", start=iso(NOW + 60), duration_minutes=30, reason="r",
-             presence_required=True)["window"]
-    assert w["presence_required"] is False
-    store.decide(w["id"], approve=True, by="telegram:1", now=NOW)
-    assert [o.id for o in store.open_windows("k8s-prod", NOW + 120)] == [w["id"]]
+def test_an_agent_cannot_move_what_the_owner_pinned(tools, kanban, planner):
+    kanban.add("t_1", status="blocked")
+    planner.set_slot("t_1", at(14), actor=OWNER)
+    planner.pin("t_1", True, actor=OWNER)
+    out = call(tools.slot, card="t_1", start="+6h")
+    assert out["ok"] is False and out["error"].startswith("The owner pinned this slot at Wed 11 Nov 14:00.")
+    assert call(tools.plan)["slots"][0]["pinned_by_owner"] is True
 
 
-def test_window_name_is_stored_on_one_line(store):
-    # The name is the header line of the owner's message: it must not add lines that look like
-    # the plugin's own (scope, time).
-    t = make(store)
-    w = call(t.propose, name="web v2\nW000000 · scope harmless\r\n Mon 01 Jan 00:00  ", scope="k8s-prod",
-             start=iso(NOW + 60), duration_minutes=30, reason="r")["window"]
-    assert w["name"] == "web v2 W000000 · scope harmless Mon 01 Jan 00:00"
-    blank = call(t.propose, name=" \n\t ", scope="k8s-prod", start=iso(NOW + 7200), duration_minutes=30, reason="r")
-    assert blank["window"]["name"] == "k8s-prod"
+def test_an_unreachable_board_is_an_error_that_says_nothing_changed(tools, kanban):
+    kanban.add("t_1")
+    kanban.down = True
+    assert "cannot be reached" in call(tools.slot, card="t_1", start="+1h")["error"]
+    plan = call(tools.plan)                                          # the plan itself is still readable
+    assert plan["ok"] and "kanban_list failed" in plan["board_error"]
 
 
-def test_pending_proposals_are_capped(store):
-    from change_windows.tools import MAX_PENDING
-    t = make(store)
-    made = [call(t.propose, name=f"n{i}", scope=f"scope-{i % 3}", start=iso(NOW + 3600 * (i + 1)),
-                 duration_minutes=30, reason="r") for i in range(MAX_PENDING)]
-    assert all(m["ok"] for m in made)
-    over = call(t.propose, name="one more", scope="k8s-prod", start=iso(NOW + 60), duration_minutes=30, reason="r")
-    assert not over["ok"] and "window_close" in over["error"] and str(MAX_PENDING) in over["error"]
-    assert len(store.list_windows(0, NOW * 2, states=("pending",))) == MAX_PENDING
-    # A decided or withdrawn proposal frees a slot; so does one whose time has passed.
-    store.decide(made[0]["window"]["id"], approve=True, by="telegram:1", now=NOW)
-    assert call(t.propose, name="a", scope="k8s-prod", start=iso(NOW + 60), duration_minutes=30, reason="r")["ok"]
-    assert call(t.close, id=made[1]["window"]["id"], reason="not needed")["ok"]
-    assert call(t.propose, name="b", scope="infra", start=iso(NOW + 60), duration_minutes=30, reason="r")["ok"]
-    assert not call(t.propose, name="c", scope="infra", start=iso(NOW + 60), duration_minutes=30, reason="r")["ok"]
-    later = Tools(store, settings=lambda k, d=None: d, tz=lambda: None, actor=lambda: "agent:test",
-                  clock=lambda: NOW + 3600 * 24)
-    assert call(later.propose, name="d", scope="infra", start=iso(NOW + 3600 * 25), duration_minutes=30, reason="r")["ok"]
+def test_an_unexpected_failure_is_reported_without_details(tools, planner):
+    planner.snapshot = lambda *a, **k: (_ for _ in ()).throw(ValueError("secret path /x"))
+    out = call(tools.plan)
+    assert out == {"ok": False, "error": "chrono_plan failed (ValueError). Nothing may have changed; read the plan again."}
+
+
+def test_now_and_clear(tools, kanban, planner):
+    kanban.add("t_1", "Upgrade ingress", status="scheduled")
+    call(tools.slot, card="t_1", start="+3h")
+    out = call(tools.now, card="t_1")
+    assert out["message"] == '"Upgrade ingress" runs now (released now: ready).' and kanban.status("t_1") == "ready"
+    out = call(tools.clear, card="t_1")
+    assert out["message"] == 'Took "Upgrade ingress" out of the plan. The card is ready: the Kanban dispatcher starts it without the plan.'
+    assert planner.store.get_slot("", "t_1") is None
+
+
+def test_plan_is_compact_and_filters_by_profile_and_label(tools, kanban, planner, clock):
+    kanban.add("t_a", "Upgrade ingress", status="blocked", assignee="builder")
+    kanban.add("t_b", "Rotate database keys", status="blocked", assignee="keeper")
+    kanban.add("t_c", "Write the release notes", status="ready", assignee="builder")
+    kanban.add("t_far", "Next month", status="blocked", assignee="builder")
+    call(tools.label, label="repo:web", cards=["t_a", "t_c"])
+    call(tools.slot, card="t_a", start="2026-11-11T14:00", estimate_minutes=120)
+    call(tools.slot, card="t_b", start="2026-11-12T09:00")
+    call(tools.slot, card="t_far", start="2026-11-20T09:00")
+    plan = call(tools.plan, horizon="2d")
+    assert plan["now"] == "2026-11-11T10:00+01:00"
+    assert plan["horizon"] == {"from": "2026-11-11T07:00+01:00", "to": "2026-11-13T10:00+01:00"}
+    assert [s["card"] for s in plan["slots"]] == ["t_a", "t_b"]      # t_far is beyond the horizon
+    assert plan["slots"][0] == {"card": "t_a", "title": "Upgrade ingress", "profile": "builder", "status": "blocked",
+                                "phase": "planned", "start": "2026-11-11T14:00+01:00", "end": "2026-11-11T16:00+01:00",
+                                "labels": ["repo:web"], "estimate_minutes": 120}
+    assert plan["unplanned"] == [{"card": "t_c", "title": "Write the release notes", "profile": "builder",
+                                  "status": "ready", "labels": ["repo:web"]}]
+    assert plan["labels"] == [{"name": "repo:web", "one_at_a_time": False}]
+    assert [s["card"] for s in call(tools.plan, horizon="week", profile="keeper")["slots"]] == ["t_b"]
+    assert [s["card"] for s in call(tools.plan, horizon="day", label="repo:web")["slots"]] == ["t_a"]
+    assert [s["card"] for s in call(tools.plan, horizon="week")["slots"]] == ["t_a", "t_b"]   # a week is 7 days
+
+
+def test_plan_tells_the_agent_what_the_owner_and_the_timer_did(tools, kanban, planner, clock):
+    kanban.add("t_1", "Upgrade ingress", status="blocked")
+    kanban.add("t_2", "Rotate database keys", status="blocked")
+    call(tools.slot, card="t_1", start="2026-11-11T14:00")
+    call(tools.slot, card="t_2", start="2026-11-11T11:00")
+    assert call(tools.plan)["since_your_last_look"] == []
+    planner.set_slot("t_1", at(16), actor=OWNER)
+    clock.now = at(11)
+    news = call(tools.plan)["since_your_last_look"]                  # reading the plan also runs what is due
+    assert news == [
+        {"when": "2026-11-11T10:00+01:00", "what": 'The owner moved "Upgrade ingress" from Wed 11 Nov 14:00 to Wed 11 Nov 16:00.'},
+        {"when": "2026-11-11T11:00+01:00", "what": 'The timer released "Rotate database keys" at its slot.'}]
+    assert call(tools.plan)["since_your_last_look"] == []
+
+
+def test_a_long_tray_is_cut_and_counted(tools, kanban):
+    for n in range(45):
+        kanban.add(f"t_{n:02d}", status="blocked")
+    plan = call(tools.plan)
+    assert len(plan["unplanned"]) == 40 and plan["unplanned_more"] == 5
+
+
+def test_a_label_can_be_deleted_and_taken_off_cards(tools, kanban, planner):
+    kanban.add("t_1")
+    call(tools.label, label="repo:web", cards=["t_1"])
+    assert call(tools.label, label="repo:web", remove_cards=["t_1"])["cards"] == {"t_1": []}
+    assert call(tools.label, label="Repo:Web", delete=True) == {"ok": True, "label": "repo:web", "deleted": True}
+    assert planner.store.labels() == []
+
+
+def test_schemas_are_complete_and_named_alike():
+    assert [s["name"] for s in SCHEMAS] == ["chrono_plan", "chrono_slot", "chrono_now", "chrono_clear", "chrono_label"]
+    for schema in SCHEMAS:
+        params = schema["parameters"]
+        assert params["type"] == "object" and set(params["required"]) <= set(params["properties"])
+        assert len(schema["description"]) > 80

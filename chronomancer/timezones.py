@@ -57,10 +57,10 @@ def local_tz(name: Optional[str], *, environ: Optional[Mapping[str, str]] = None
         zone = _zone(str(name).strip())
         if zone is not None:
             return zone
-        _warn_once(f"unknown:{name}", "change-windows: unknown timezone %r; using the system zone", name)
+        _warn_once(f"unknown:{name}", "chronomancer: unknown timezone %r; using the system zone", name)
     system = system_zone_name(environ=environ, localtime=localtime)
     if system:
         return ZoneInfo(system)
-    _warn_once("fixed", "change-windows: could not find the system's IANA time zone; using today's fixed offset "
+    _warn_once("fixed", "chronomancer: could not find the system's IANA time zone; using today's fixed offset "
                         "(wrong across a daylight-saving change). Set the timezone setting.")
     return datetime.now().astimezone().tzinfo
