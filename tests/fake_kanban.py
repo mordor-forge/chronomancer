@@ -43,6 +43,14 @@ class FakeKanban:
             return json.dumps({"error": f"{tool} refused"})
         return json.dumps(getattr(self, "_" + tool)(args))
 
+    def _kanban_create(self, args):
+        task_id = f"t_{len(self.tasks) + 1:08x}"
+        parents = list(args.get("parents") or [])
+        status = "triage" if args.get("triage") else args.get("initial_status") if args.get("initial_status") == "blocked" \
+            else "todo" if any(self.tasks.get(p, {}).get("status") != "done" for p in parents) else "ready"
+        self.add(task_id, args.get("title"), status=status, assignee=args.get("assignee") or "", parents=parents)
+        return {"ok": True, "task_id": task_id, "status": status}
+
     def _kanban_list(self, args):
         limit = int(args.get("limit") or 50)
         rows = [dict(task, parents=self.parents[tid]) for tid, task in self.tasks.items()
