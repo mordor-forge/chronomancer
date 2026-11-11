@@ -101,8 +101,9 @@ def test_the_timer_releases_a_due_card_without_any_call(plugin_entry, kanban):
     start = int(time.time()) + 1
     planner.set_slot("t_1", start, actor="owner")                    # set_slot wakes the timer; it sleeps until the start
     assert wait_for(lambda: kanban.status("t_1") == "ready", seconds=8)
-    assert planner.store.get_slot("", "t_1").state == "released"
-    assert planner.store.log_tail()[0].actor == "timer" and ctx.hooks == {}
+    # the pass records the release after the card is released: wait for the record, not only the card
+    assert wait_for(lambda: planner.store.log_tail()[0].actor == "timer")
+    assert planner.store.get_slot("", "t_1").state == "released" and ctx.hooks == {}
 
 
 def test_announce_does_nothing_without_hermes_and_sends_one_event_with_it(plugin_entry, monkeypatch):
@@ -193,3 +194,34 @@ def test_versions_agree():
     assert chronomancer.__version__ == version
     dashboard = json.loads((ROOT / "dashboard" / "manifest.json").read_text())
     assert (dashboard["name"], dashboard["version"], dashboard["api"]) == ("chronomancer", version, "plugin_api.py")
+
+
+def test_the_readme_matches_the_manifest_and_states_the_limits():
+    manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text())
+    readme = (ROOT / "README.md").read_text()
+    assert f"({manifest['version']})" in readme.split("## Limits")[0]
+    for name, spec in manifest["config_schema"].items():
+        default = '`""`' if spec["default"] == "" else f"`{str(spec['default']).lower()}`"
+        assert f"| `{name}` | {default} |" in readme, name
+    tools = readme.split("## Agent tools")[1].split("## The Desktop page")[0]
+    assert all(f"`{schema['name']}`" in tools for schema in SCHEMAS)
+    assert "hermes -p <profile> plugins enable chronomancer" in readme
+    limits = readme.split("## Limits")[1].split("## Install")[0]
+    for phrase in ("It advises. It does not enforce.", "The timer needs a running gateway.", "A pin is a courtesy, not a lock.",
+                   "An estimate is a guess."):
+        assert phrase in limits, phrase
+    disclosure = readme.split("## Disclosure")[1].split("## Development")[0]
+    for phrase in ("**Network:** none.", "tools.kanban_tools", "card titles", "one daemon thread"):
+        assert phrase in disclosure, phrase
+
+
+def test_the_docs_speak_the_glossary():
+    # The words the glossary avoids for the plan's own concepts stay out of what an agent or a person reads.
+    from chronomancer import tools as tool_module
+    served = " ".join(schema["description"] for schema in tool_module.SCHEMAS).lower()
+    for avoided in ("conflict", "time window", "ticket", "wake job"):
+        assert avoided not in served, avoided
+    glossary = (ROOT / "GLOSSARY.md").read_text()
+    for term in ("**Slot**", "**Clash**", "**Horizon**", "**Pin**", "**Release**", "**Label**"):
+        assert term in glossary
+    assert sorted(p.name[:4] for p in (ROOT / "docs" / "adr").glob("*.md")) == [f"{n:04d}" for n in range(1, 8)]

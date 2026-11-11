@@ -1,414 +1,169 @@
-# change-windows
+# Chronomancer
 
-An agent that can run `kubectl apply` at 03:00 will, sooner or later, do it at 03:00, and a rule
-in a prompt is advice the model can forget. `change-windows` is a
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that blocks production writes
-in a `pre_tool_call` hook unless the owner approved a time window for that scope.
+One plan for the Kanban cards of every profile on a Hermes gateway (0.1.0).
 
-![The Change windows page in Hermes Desktop: the door says which window is open and for how long, the runway shows today and tomorrow with two overlapping proposals, and the first window card carries its approval stamp.](docs/desktop-page.png)
+Our agents work a shared Kanban board, and many cards must not start before a set time: a
+production change after a review, a migration after its backup. The Kanban can park a card, but it
+has no timer. So we released parked cards by hand: one reschedule needed 55 dated cron jobs, and
+when one day moved, 34 of them had to be paused and rebooked one by one. We could not see the
+result either. The plan lived in a chat.
 
-*Hermes Desktop, default theme, synthetic data from an isolated lab.*
+Chronomancer gives a card a **slot**: a planned start and an estimate. It parks the card, releases it
+at the start, and shows the slots of every profile on one timeline, with the places where they
+clash. You plan by dragging. Your orchestrator agent plans through five tools. Both change the
+same plan, and each change records who made it.
 
-What it does not do:
+## Limits
 
-- **A seatbelt, not a sandbox.** Text rules catch honest commands. A hidden command (variables,
-  encodings, a script file) gets past a regular expression.
-- **Only the commands the rules name.** 13 default rules for `kubectl`, `helm`, Argo CD,
-  `tofu`/`terraform`/`pulumi`, `git push` and PR merges. Not an alias, not `make deploy`.
-- **Only calls through Hermes tool dispatch.** Not `no_agent` cron scripts, shell hooks or what a
-  person types in a terminal.
-- **Approvals need a person.** No agent tool can approve. Telegram and Mini App approvals are
-  signed by Telegram; a Desktop approval trusts the Desktop session.
-- **Not verified on a real phone.** The Mini App is tested in Chromium with synthetic Telegram
-  signatures.
+Read these first.
 
-The full list is in [Limits](#limits-read-before-you-rely-on-it).
+- **It advises. It does not enforce.** A clash is shown and explained, and nothing is refused
+  because of it. Anyone who can use the Kanban can still start any card.
+- **It is a timer for parked cards, not a scheduler of agents.** At the slot's start the card
+  becomes ready. From then on Hermes's own dispatcher decides when a worker takes it.
+- **The timer needs a running gateway.** A slot that starts while the gateway is down is released
+  late if the gateway is back within the slot's estimate (at least 15 minutes). After that the slot
+  is marked missed and you decide.
+- **An estimate is a guess.** A card that runs past it is marked as over its estimate. Nothing
+  stops it.
+- **A pin is a courtesy, not a lock.** The agent tools refuse to move a slot that you pinned. The
+  Desktop page trusts the local Desktop session, and code that runs as your OS user can call the
+  same local API.
+- **One board.** The plugin plans the board in its `board` setting. Several boards at once and
+  several gateways are not supported.
+- **Reassigning a card or changing its model** stays on the Kanban board. The Kanban tools that a
+  plugin may call cannot do either.
+- The narrow layout was tested in Node only. Nothing was tested on a phone.
 
 ## Install
 
-Run these yourself in a terminal (the plugin's `self-protect` rule stops an agent from installing,
-updating or disabling it):
-
 ```bash
 hermes plugins install Gdetrane/hermes-change-windows
-hermes plugins enable change-windows
+hermes -p <profile> plugins enable chronomancer
+hermes gateway restart
 ```
 
-Then set who may approve, in `config.yaml` of every profile that can reach production, and restart
-the gateway:
+Enable it in **one** profile: the one that plans the work of the others (your orchestrator), which
+is also the profile your Hermes Desktop connects to. The Kanban board is shared by every profile on
+the gateway, so this one instance sees and plans all cards. The other profiles need nothing.
 
-```yaml
-plugins:
-  entries:
-    change-windows:
-      settings:
-        approver_telegram_ids: [123456789]   # your Telegram user id; empty = nobody can approve
-        timezone: Europe/Prague
-```
+In Hermes Desktop: **Capabilities** -> **Plugins** -> **FILTERS** -> **Installed**, turn on
+**Chronomancer**. Turn on **Kanban** too if you want the slot badges on the cards. The page is the
+**Chronomancer** row in the sidebar.
 
-Needs Hermes 0.22.7 or later. The guard and the agent tools work at once; approvals need the
-gateway connected to Telegram (see [Limits](#limits-read-before-you-rely-on-it)).
-
-## Status
-
-> Status: **first release** (0.1.0). The guard, the four agent tools and the Telegram buttons,
-> card release, start/end notices, Mini App and Hermes Desktop half are implemented. `hermes plugins doctor` and
-> `validate` pass on Hermes v0.23.0. Local tests include real HTTP requests and a phone-sized
-> Chromium flow. The real Telegram phone/HTTPS check was waived
-> by the owner, not passed; browser tests use synthetic Telegram signatures. Real phone, HTTPS
-> routing and Telegram-signed initData remain unverified. The Desktop half is tested against
-> stand-ins for the Desktop SDK and over HTTP against its backend routes, and was run once in an
-> isolated Hermes Desktop on Linux with synthetic data (see Limits for what that run covered).
-
-Outside a window the call is blocked, and the model is told which window comes next and how to ask
-for one.
+Needs Hermes 0.22.7 or newer. Checked on 0.23.0 and 0.23.1.
 
 ## How it works
 
-1. **Rules** say which tool calls are production writes and which **scope** they need
-   (`k8s-prod`, `gitops-merge`, `infra`, or your own). Defaults cover `kubectl`/`oc` writes and
-   remote execution (`exec`, `cp`, `debug`, `run`), `helm` releases, `helmfile`
-   apply/sync/destroy, Argo CD application, ApplicationSet, cluster, repository and project
-   changes, `tofu`/`terraform`/`pulumi` apply and destroy, `terraform`/`tofu` state changes
-   (`state rm|mv|push`, `taint`, `refresh`, `force-unlock`), every `git push`, and
-   `gh`/`tea`/`glab` PR merges (also `gh api` with `PUT` on a `/merge` path). You can
-   add rules for MCP tools by name.
-2. **Windows** have a scope, a start and an end, and can be exclusive (no overlap in the scope)
-   or shared.
-3. **Agents propose, owners approve.** `window_propose` stores a pending window and reports
-   overlaps. No agent tool can approve or decline. Approval needs the owner, through one of three
-   channels, and every decision records which one:
-   - **Telegram**: a button press from an allow-listed Telegram user id.
-   - **Mini App**: Telegram-signed initData from that user, verified on every request.
-   - **Hermes Desktop**: the Change windows page. This one is not signed. It trusts the local
-     Desktop session that Hermes authenticated, and code that runs as your OS user can reach the
-     same local API. Set `approval.desktop: false` for Telegram-only approval.
+A slot belongs to one card. What the plugin does to the card depends on the card's status:
 
-   There is no CLI approval.
-4. **The guard** checks every tool call against the rules. An unmatched call costs a few regular
-   expression checks and never touches the store. A matched call needs an open window for every
-   scope it touches; otherwise it is blocked. If the store fails, a matched call is blocked
-   (fail closed; in `warn` mode it is allowed and not recorded). Matched calls are audited on a best-effort basis: tool, rule ids, scope, window
-   and size; command text only if you opt in.
-   If rules cannot be loaded or matched, calls are blocked because their match is unknown;
-   the four window tools remain available to inspect, propose or remove permission.
-   `mode: "off"` is read before the rules, so it also ends that state.
+| Card status | When it gets a future slot | At the slot's start |
+|---|---|---|
+| `ready`, `todo` | parked (`scheduled`), so it cannot start early | released |
+| `blocked`, `scheduled` | left as it is: it already waits | released |
+| `running`, `review`, `done`, `triage` | refused, with the reason | |
+
+- **Park** is `kanban_schedule`, with the marker `SCHEDULED_UNTIL=<start>` that the Kanban documents
+  for this. **Release** is `kanban_unblock`: the card becomes `ready`, or `todo` while its parent
+  cards are open. The plugin then adds one fixed-text comment with the planned start (setting
+  `comment_on_release`).
+- **Run now** releases the card at once and moves its slot to now.
+- **Unplan** removes the slot. The card is not touched: a parked card stays parked until it gets a
+  new slot or is run now.
+- **The timer** is one thread in each Hermes process that loads the plugin; in practice, the
+  gateway. It wakes at the next slot start, and at least once a minute. Each due slot is leased to
+  one caller in the plan database, so a card is released once even when several processes look.
+
+**Clashes.** A label can be marked "one card at a time" (a cluster, a database). Two slots that
+overlap in time and share such a label **clash**. Two overlapping slots of one profile that share
+no such label are only **busy**. A card that runs past its estimate keeps its time until now, so
+it can clash with the slot it runs into. Every result that reports a clash also gives the next
+start without one.
+
+**Labels** belong to the plugin (the Kanban has none): `repo:web`, `project:shop`, `op:upgrade`.
+The orchestrator creates them as it needs them. A card's tenant and project from the board show up
+as labels too.
+
+**Who decides.** There is no approval step. You and the orchestrator both change the plan; the
+timer changes it at a slot's start. The change log names the actor of each change, the page shows
+your own changes in bold, and `chrono_plan` tells the orchestrator what you and the timer changed
+since it last looked. You can pin a slot.
 
 ## Agent tools
 
 | Tool | What it does |
 |---|---|
-| `window_propose` | Propose a window (pending until the owner approves). Links Kanban cards to release at start. The name is kept on one line. At most 10 proposals can wait for a decision at a time (all scopes); further ones are refused until one is decided, withdrawn or past its end. |
-| `window_list` | Windows in the next N days. |
-| `window_next` | Is a window open now for a scope? If not, the next one and pending proposals. |
-| `window_close` | Close an open window early, or withdraw a pending proposal. |
+| `chrono_plan` | The plan for a horizon (`day`, `2d`, `week`): slots, clashes, unplanned cards, labels, and what changed since the caller last looked. Filters: `profile`, `label`. |
+| `chrono_slot` | Give a card a slot or move it. `start` is ISO 8601 or a delay (`+90m`, `+2h`, `+1d`). `dry_run` only reports the clashes and the next free start. |
+| `chrono_now` | Release a card at once. |
+| `chrono_clear` | Remove a card's slot. |
+| `chrono_label` | Create or change a label (`one_at_a_time`), put it on cards, take it off, delete it. |
 
-## Telegram
+A tool never raises. A refusal is `{"ok": false, "error": "<a sentence>"}`.
 
-When the gateway connects to Telegram, the plugin adds its own buttons and one command to the
-gateway's bot. It needs no bot token of its own.
+## The Desktop page
 
-- **Proposal message.** Each new proposal goes to the owner chat: name, scope, time, reason,
-  linked cards (title, status and assignee when the board can be read), one line per overlap, and
-  the buttons **Approve** and **Decline**. The window id is the last line.
-- **Overlaps.** An overlap line names the other window, its state, time and proposer, the shared
-  span ("overlaps 14:00-14:30, 30 min") and the rule ("same scope k8s-prod; both windows are
-  exclusive"). A **Conflicts (n)** button sends one explanation per conflicting window: shared
-  span, rule, what it means, ways out. Each has a **Show** button that posts that window's own
-  message with its own buttons. A refused approval says why: "Can't approve 'web v2 rollout': it
-  overlaps 'Argo CD upgrade' (approved, 14:00-15:00, k8s-prod) for 30 min. Decline one of them,
-  or ask the agent to propose another time." Proposals from any process
-  of the profile (gateway chat, CLI chat, Kanban workers) are queued in the plugin database; the
-  gateway sends them within about 10 seconds (at once when the proposal comes from the gateway).
-- **Close now.** An approved window's message has a **Close now** button. Matched calls are
-  blocked again from the next call on.
-- **Window opens.** At the start of an approved window the plugin releases its linked Kanban
-  cards and sends "Window OPEN" with the cards that are now eligible, the ones it could not release
-  (unknown, triage, done) and a **Close now** button. Approving after the start opens it at once.
-- **Window ends.** At the end: "Window ended", unless it was closed early. A start that the gateway
-  missed completely (it was down for the whole window) is reported as missed; its cards stay as they
-  were. An effect that fails 3 times (2 minutes apart) is reported to the owner chat.
-  Undeliverable failure reports retry after 10 seconds, doubling up to one hour, and log at
-  WARNING on every failed delivery (including at the cap). This report backoff is per process
-  and resets on restart; successful delivery finishes the effect.
-- **`/windows`.** Today's and tomorrow's windows, with overlaps in the same words, in private chats only. In a
-  group, approvers receive only an instruction to use a private chat. With a Mini App URL configured,
-  proposal messages and `/windows` include **Open list** in private chats. No bot menu, commands
-  list or webhook is changed by the plugin.
-- **Who can act.** Only the Telegram user ids in `approver_telegram_ids`. Empty means nobody. Other
-  users get "Only an approver can do this" on a button and no answer to `/windows`. A stale button
-  (an old message) is checked against the current state and redrawn.
-- Messages are plain text, so agent-written names and reasons cannot add formatting or links.
+- **The header**: what runs next, counts (running, clashes, busy, needs a look, planned,
+  unplanned), and the horizon switch: Day, 2 days, Week.
+- **The timeline**: a lane per profile, a bar per slot. Outlined: planned. Dashed: released.
+  Shimmering: the card runs. Faded: done. Red dashed: missed or not released. A clash is hatched on
+  both bars and joined by a red dashed line. Drag a bar to move its slot in steps of 15 minutes, or
+  focus it and press the left or right arrow key.
+- **Unplanned**: the open cards without a slot. Drag one onto the timeline.
+- **Selected card**: its state in one sentence, its clashes, the next free start, Cast now (asks
+  first), Move, Pin, Unplan, and its labels.
+- **Changes**: the newest moves; label changes on request.
+- A status-bar chip, a palette command, and a badge with the slot on the cards of the Kanban board.
 
-## Mini App
-
-Set `miniapp_url` to your HTTPS URL and proxy it to `127.0.0.1:18782` (or your configured loopback
-host/port). There is no hosted service: you publish HTTPS yourself. Open **Open list** in a private
-chat with the bot. The page uses Telegram's theme colours only. On top is the door: one sentence
-("Open: Ingress controller rollout, 40 min left", "Closed: production writes are blocked") with a
-lock glyph, then a compact timeline of today and tomorrow (approved bars solid, proposals hatched,
-overlaps crossed, night shaded, a "now" needle). Below: today plus seven calendar days, Approve /
-Decline / Close, and the last 20 audit rows. An overlap is a button with a sentence; it opens the
-other window's sheet with the shared span, the rule, what it means and the ways out, and **Back**
-returns. Names, reasons and card titles render as text. The page re-reads every 30 seconds while
-it is visible. Command previews and session/task ids are never sent to this page.
-
-Every API request verifies Telegram's Ed25519 signature and the current approver allow-list.
-Read sessions last one hour; decisions require initData no older than ten minutes. Reopen the
-Mini App when the session expires. Writes are POST-only with a client idempotency key: the decision
-and its original result are stored atomically, so a retry after a lost response or restart cannot
-apply it twice. Reusing a key for a different action is refused. Original replay results can be
-stale; the page refreshes current state after every action. The plugin database stores each key
-with the approver Telegram user id, window id, action, creation timestamp and the full original
-window snapshot (including name, reason and decision metadata). Keys and snapshots older than
-90 days are pruned at gateway startup and daily, alongside audit rows. After pruning, an old key
-has no replay guarantee; current window-state checks still apply.
-Requests are limited to 120 reads and 30 writes per approver per minute in each gateway process.
-There are no cookies, CORS headers or HTTP access logs. Binding outside loopback is refused.
-
-The listener is optional (`miniapp_url` empty disables it), one per profile, started with Telegram.
-A reconnect reuses it and rebinds bot identity; plugin unload closes it. If the port is occupied,
-check configuration and restart the gateway; the guard and Telegram buttons continue working.
-
-## Desktop
-
-The package also carries a Hermes Desktop half (`desktop/plugin.js`) and its backend routes
-(`dashboard/plugin_api.py`, mounted at `/api/plugins/change-windows/`). Install the plugin on the
-machine the Desktop app runs on, enable it for the profile (`hermes plugins enable change-windows`,
-which also lets the backend routes load), restart the gateway, and turn the Desktop half on under
-**Capabilities → Plugins** (Desktop halves are off until you do). What appears:
-
-- **Page and sidebar row "Change windows".** Four parts, top to bottom:
-  - *The door.* One sentence with a lock glyph: "Open: Ingress controller rollout, 42 min left",
-    "Closed: production writes are blocked" with the next approved window, or "Warn mode" / "Guard
-    off" when the guard does not block.
-  - *The runway.* Today and tomorrow in the plugin's time zone. Approved bars are solid, proposals
-    hatched, an overlap is a hatched band, night is shaded, a needle marks now. Bars are keyboard
-    buttons: focus or hover reads one out, Enter or a click jumps to its card. In a narrow window
-    the runway is a vertical ladder.
-  - *Window cards*, grouped as open now, waiting for your decision, approved, and
-    closed/expired/declined. Each shows scope, time, reason, proposer, linked cards (title, status
-    and assignee, read through the `kanban_show` tool), a decision stamp ("Approved in Telegram,
-    13:58") and the id with a copy button.
-  - *The ledger.* Decisions and the last 20 matched calls in one log (metadata only; command
-    previews and session/task ids are never sent to this page).
-- **Overlaps.** An overlap is a button with a sentence ("Overlaps 'Index rebuild on orders'
-  17:28-17:58, 30 min"). It moves to the other window's card, marks both bars and the shared span
-  on the runway, and opens a panel with the rule, what it means and the ways out. A linked card
-  chip opens the Kanban board; the SDK has no route to one card.
-- **Actions.** Approve and Decline on a pending window, Close now on an approved or open one.
-  Each asks for confirmation first and sends one idempotency key per dialog, so a retry cannot
-  apply twice. The rules are the Telegram ones: a proposal that has ended, or that overlaps an
-  approved exclusive window, is refused with the same message.
-- **Status-bar chip.** The door in two words: "open, 42 min", "next 14:00" or "closed". Click it to
-  open the page.
-- **Kanban card badges.** A card linked to a window shows the window's state and time
-  (for example "window open, 42 min", "next 14:00", "pending 14:00"). The board is Desktop's bundled Kanban
-  plugin, which is also off until you turn it on under **Capabilities → Plugins**.
-- **Palette command** "Open change windows".
-
-When Desktop reports a narrow viewport (`host.state.viewport.narrow`), or the content column is
-under 560 px, the runway becomes the ladder and the cards stack. Colours are the app's theme
-variables only; all text uses the primary text tone, which measured at 6.05:1 or more in the six
-theme modes checked (Nous, Catppuccin Latte and Mocha, Mono dark, Cyberpunk dark). The page polls
-every 7 seconds and uses no socket.
-
-**Trust.** Telegram and Mini App approvals are signed by Telegram. A Desktop approval is not: the
-routes sit behind Hermes's own authentication (the Desktop session, or a signed-in dashboard
-session) and add no identity of their own. Anything that can use that session can approve, and
-code running as your OS user can reach the local API. The decision is stored as `desktop` with
-the channel `desktop`, and the Telegram message says "Decided by desktop in Hermes Desktop".
-`approval.desktop: false` makes the approve and decline routes answer 403 and hides those two
-buttons; Close now stays, because closing only removes permission. The `self-protect` rule blocks
-agent calls that name `/api/plugins/change-windows`, as a text rule (see Limits).
-
-The backend routes work without Telegram. Card release and the open/end notices are still done by
-the gateway's scheduler, so they need the gateway connected to Telegram as before; after a Desktop
-approval the scheduler picks the change up within about 10 seconds. The Telegram proposal message
-is not edited after a Desktop decision; its buttons answer with the current state when pressed.
-
-## Kanban cards
-
-`window_propose` takes Kanban task ids (`cards`, optionally `board`). When the window opens, the
-gateway's scheduler goes through the kanban tools (`ctx.dispatch_tool`): `kanban_show` re-reads the
-card, `kanban_unblock` releases a `blocked` or `scheduled` card (it lands in `ready`, or `todo`
-while parent cards are open), and `kanban_comment` adds one comment with the window id, scope and
-end time. Cards that are already `ready`, `todo`, `review` or `running` get the comment only. The
-comment never contains the window's name or reason: comments reach future workers' prompts.
-The plugin promises that the card becomes eligible; the worker starts when the dispatcher has
-capacity. A `triage` card cannot be released through any public surface, so it is reported.
+Filters: profiles, labels, clashes only. Colour comes from your theme; every state also has a
+word, a glyph or a pattern. Motion stops under "reduce motion".
 
 ## Settings
 
-`plugins.entries.change-windows.settings` in `config.yaml`:
-
-| Key | Default | Meaning |
+| Setting | Default | Meaning |
 |---|---|---|
-| `mode` | `enforce` | `enforce` blocks; `warn` records and allows, except `self-protect` hits, which always block; `off` disables the guard (an unquoted YAML `off` is read as `false` and also counts as off). Any other value enforces. |
-| `timezone` | system zone | IANA zone (for example `Europe/Prague`) for showing times and for times given without an offset; daylight-saving changes are applied per date. Empty: the system zone by name (`TZ`, then the `/etc/localtime` link). If no name is found, the plugin logs a warning and uses today's fixed offset, which is wrong across a daylight-saving change. |
-| `rules` | `[]` | Extra rules: `{id, scope, tools: [fnmatch], match: regex, field: command\|code\|*}`. |
-| `disabled_rules` | `[]` | Default rule ids to turn off. `self-protect` cannot be turned off. |
-| `approver_telegram_ids` | `[]` | Telegram user ids that may approve, decline and close windows and read `/windows`. Empty = nobody. |
-| `approval.desktop` | `true` | `true`: Approve and Decline also work on the Hermes Desktop page, which trusts the local Desktop session. `false`: Telegram and Mini App only; the Desktop page still lists windows and can close them. Any value other than `true` counts as `false`. Write it as `approval: {desktop: false}`. |
-| `owner_chat_id` | `0` | Chat that gets proposal messages. `0` = the private chat of the first approver. |
-| `miniapp_url` | empty | Your HTTPS URL; empty disables the listener and Open list buttons. |
-| `miniapp_host` | `127.0.0.1` | Loopback listen address only (also accepts `::1` or `localhost`). |
-| `miniapp_port` | `18782` | Listener port; choose a distinct port for each profile. |
-| `telegram_bot_id` | `0` | Public bot id; 0 discovers it from the initialized bot. Never enter a token. |
-| `max_window_hours` | `8` | Longest window an agent may propose. |
-| `audit_command_preview` | `false` | Store a masked preview of matched `terminal` commands. Masking is best effort. |
+| `board` | `""` | Slug of the board to plan. Empty: the active board. |
+| `timezone` | `""` | IANA zone for reading and showing times, for example `Europe/Prague`. Empty: the system zone. |
+| `default_estimate_minutes` | `60` | The estimate of a new slot when none is given. |
+| `comment_on_release` | `true` | Add one fixed-text comment to a card when the plugin releases it. |
 
-Example rule for an MCP server (match write tools by name; no `match` = any call of those tools):
-
-```yaml
-rules:
-  - id: mcp-k8s-write
-    scope: k8s-prod
-    tools: ["mcp__kubernetes__*delete*", "mcp__kubernetes__*create*",
-            "mcp__kubernetes__*apply*", "mcp__kubernetes__*patch*", "mcp__kubernetes__*scale*"]
+```bash
+hermes -p <profile> config set plugins.entries.chronomancer.settings.timezone Europe/Prague
 ```
-
-Rule fields: `match` (regex that must hit), `unless` (regex that cancels a hit), `field`
-(`command`, `code` or `*` for all arguments). Quotes and backslashes are removed before matching,
-so `"kubectl" 'apply'` counts as `kubectl apply`. A command segment ends at `|`, `;`, `&` or a new
-line.
-
-## Limits (read before you rely on it)
-
-- **A seatbelt, not a sandbox.** Text rules catch honest commands. A caller that hides a command
-  (variables, encodings, a script file) can get past a regular expression. Keep real
-  credentials scoped: use read-only kubeconfigs outside windows if you can.
-- **Only the commands the rules name.** The default rules know the CLIs by name and a list of
-  write verbs. They do not match a shell alias (`k apply`), a wrapper (`make deploy`,
-  `./deploy.sh`), a verb they do not list (for example `oc new-app`, `pulumi refresh`, `helmfile`
-  inside `execute_code`), a merge through another API client, or a command whose verb comes after
-  a `|` inside `$(...)`. Add your own rules for the ways your agents really deploy.
-- **Opaque code tools.** For `execute_code` the default rules match the binary name anywhere in
-  the code (`kubectl`, `helm`, `tofu`, ...), not a verb, and `git` with `push` (or `gh` with
-  `merge`) anywhere. Code that names them is treated as a write.
-- **What the hook sees.** Every tool call that goes through Hermes tool dispatch: the agent loop,
-  `execute_code` sandbox calls, MCP tools, `tool_call` bridge calls, delegated subagents, Kanban
-  workers and cron runs of a profile that has the plugin enabled. Not covered: `no_agent` cron
-  scripts, shell hooks, safe-mode troubleshooting workers, `ctx.call_mcp` calls made by other
-  plugins, external coding harnesses that run their own tools, and anything a person types in a
-  terminal. If Hermes's own hook plumbing fails (not this plugin's callback), Hermes lets the call
-  through; another plugin's `modify` directive can change arguments after this guard looked.
-- **Per profile.** Windows live in the profile's plugin data. Enable the plugin in every profile
-  that can reach production.
-- **Not an identity boundary.** Code that runs as your OS user can edit Hermes's config or the
-  plugin's database. The `self-protect` rule blocks the obvious agent attempts (the plugin's data
-  path, its installed code under `.hermes/**/plugins/change-windows`, `hermes change-windows <subcommand>` except `list`/`show`/`status`/`help`,
-  `hermes plugins disable|remove|... change-windows`, edits of a config under `.hermes/` that name
-  `change-windows`), also in warn mode, but it is a regex too. A config edit that sets `mode: off`
-  without naming the plugin is not caught, nor is a relative path that leaves out those
-  directory names, nor a Hermes home that is not called `.hermes`. Approval is through Telegram from an allow-listed
-  user id, or through the Hermes Desktop page, never through an agent tool or a CLI. The Desktop
-  routes are a local HTTP API behind Hermes's authentication: `self-protect` blocks agent calls
-  that name `/api/plugins/change-windows`, but a caller that hides the URL, and already holds a
-  valid Hermes session credential, could approve. If that matters, set `approval.desktop: false`;
-  approval is then Telegram-signed only.
-- **Conservative on purpose.** Every `git push` needs a window (refspecs, upstreams and wildcards
-  are not parsed); disable `git-push` and add a narrower rule if your agent pushes feature branches.
-  `kubectl exec` counts as a write. A resource named `delete` in `kubectl get configmap delete` is
-  blocked. Turn rules off with `disabled_rules`.
-- **Timed effects use bounded retries.** A message or comment can repeat after a crash between
-  the remote action and the local record; delivery is not guaranteed. There are at most 3 attempts,
-  with a 2-minute lease. A release re-reads the window and each card to avoid repeating completed
-  work where it can observe the result. The scheduler runs in
-  the gateway: with the gateway down, cards are released when it comes back (if the window has not
-  ended), and the guard keeps working without it.
-- **Telegram availability.** Telegram approvals, the Mini App and scheduled effects (proposal
-  messages, card release, open/end notices) require the gateway connected to Telegram and
-  `plugins.isolation: in_process`. With no Telegram or with `host` isolation, the guard and tools
-  still work, and a window can only be approved on the Hermes Desktop page (if `approval.desktop`
-  is on); its cards are not released and no notice is sent.
-- **Desktop half: one run in the app.** Besides the tests against stand-ins for the Desktop SDK,
-  it was run once in an isolated Hermes Desktop on Linux (a v0.22.6-line build) against a Hermes
-  v0.23.0 gateway, with synthetic data: the page in light and dark mode, the narrow layout through
-  an emulated 390x844 viewport, the sidebar row, the status-bar chip, the Kanban badges, the
-  palette command and the three actions. Not checked: a real small window or touch screen, the
-  Hermes mobile app, macOS and Windows, custom themes, and a remote backend. The status-bar chip keeps
-  the data fresh for the Kanban badges; if the chip is not mounted, badges update only while the
-  page is open. After a profile switch the page can show the previous profile's windows for up
-  to 7 seconds.
-- **Admission only.** Closing a window blocks later calls; it does not stop a command that already
-  started.
 
 ## Disclosure
 
-- **Window records:** id, name, scope, start/end times, exclusive/presence flags, state, kind,
-  reason, linked card ids/boards, creation/decision/check-in/close times and close reason. The
-  proposing profile name is stored as `agent:<profile>`; a decision records the approver Telegram
-  user id as `telegram:<id>` and the channel (`telegram`, `miniapp` or `desktop`); a Desktop
-  decision has no user identity and is recorded as `desktop`. The close reason includes the
-  closing actor. Window records
-  have no automatic expiry. Each Mini App or Desktop idempotency key stores a full decision snapshot plus
-  approver id (0 for Desktop), window id, action and timestamp for 90 days (see Mini App above). The effects
-  queue stores window id, effect kind, due/claim/completion times, attempt count and result/error
-  text; it has no automatic expiry. Telegram `initData` is verified in memory and never stored.
-- **Reads:** the arguments of every tool call, to match rules. For matched calls the plugin's own
-  SQLite database (`<HERMES_HOME>/plugin-data/change-windows/`) stores the tool name, rule ids,
-  scope, window, session/task ids and the argument size or names, not the values. With
-  `audit_command_preview: true` it also stores a masked command preview (commands longer than 2000
-  characters are omitted); masking is best effort, so a secret can remain. Turning the setting off
-  does not clean old rows: `Store.purge_previews()` (from Python; there is no command for it yet)
-  can blank stored previews. The gateway scheduler
-  prunes audit rows older than 90 days at startup and daily (no pruning while the gateway is off);
-  remember that SQLite and backups can keep old pages. Treat the database as sensitive.
-- **Network:** messages to the configured owner chat, and answers to button presses and
-  `/windows`, through the gateway's own Telegram bot. The Mini App page loads
-  Telegram's `telegram-web-app.js` from telegram.org in the Telegram client. The Desktop half
-  talks only to the plugin's own routes on the Hermes backend the Desktop app is connected to.
-- **Background work:** inside the gateway, when Telegram connects: one supervised task per profile
-  (`ctx.spawn_task`) that sends proposal messages and the start and end notices, and releases
-  linked cards. When configured, a second supervised task serves the Mini App on loopback
-  (default `127.0.0.1`); you publish its HTTPS URL yourself.
-- **Kanban:** unblocks and comments on the cards a window links, through the kanban tools
-  (`kanban_show`, `kanban_unblock`, `kanban_comment`), when the window opens.
-- **Credentials:** the plugin reads none and asks for none. The Mini App verifies Telegram
-  `initData` with Telegram's published Ed25519 key and the public bot id, so the plugin never holds
-  the bot token. (An opted-in command preview can contain a secret that masking missed.)
-- **Plugin isolation:** the Telegram parts need `plugins.isolation: in_process` (the default). Under
-  `host` isolation the guard and the tools work; Telegram, the Mini App and timers are off.
-- **Shell commands:** none.
-
-## Roadmap
-
-- Later: timeline lanes and emergency windows.
-- Later: reminders before a window, windows that open only after the owner checks in (the store
-  has the field; no tool or button sets it today), `window_propose` refusing triage cards up front.
-- CLI: `hermes change-windows list` (read-only; approvals stay in Telegram and Desktop).
+- **Network:** none.
+- **Outside its own data:** it reads and writes the Kanban board, only through Hermes's kanban
+  tools (`kanban_list`, `kanban_show`, `kanban_schedule`, `kanban_unblock`, `kanban_comment`). The
+  agent half calls them with `ctx.dispatch_tool`. The Desktop backend runs in the dashboard
+  process, which has no plugin context, so it imports `tools.kanban_tools` (a private core module)
+  to register those tools there. `hermes plugins validate` warns about this import.
+- **Stored:** `plan.db` in the plugin's data directory: slots, labels, and the change log. The log
+  holds card ids, card titles, profile names and label names. Entries older than 30 days are
+  removed.
+- **Background:** one daemon thread per process that loads the plugin (not in Kanban workers). It
+  sleeps until the next slot start.
+- **Shell commands, credentials, environment variables:** none.
+- **Desktop events:** `plugin.chronomancer.plan.changed`, with an empty payload, when the plan
+  changes.
 
 ## Development
 
 ```bash
-cd tests && uv run --no-project --with 'pytest>=8,<9' --with 'cryptography>=42,<51' --with 'pyyaml>=6,<7' \
-  --with 'python-telegram-bot>=22,<23' --with 'aiohttp>=3.14,<4' \
-  --with 'playwright>=1.55,<2' python -m pytest -q
-cd .. && dev/scratch-env.sh hermes plugins doctor . --ci
-dev/scratch-env.sh hermes plugins validate . --install-deps
+cd tests && uv run --no-project --with pytest --with pyyaml --with fastapi --with httpx python -m pytest -q
 ```
 
-Add `--with 'fastapi>=0.104,<1' --with 'httpx>=0.28,<1'` to also run the Desktop backend routes
-over HTTP (`test_plugin_api.py`; skipped without them, and `test_desktop_api.py` covers the same
-logic without a web framework). The Desktop plugin tests run `desktop/plugin.js` in `node` against
-stand-ins for the Desktop SDK and are skipped without `node`.
+- `tests/` runs without Hermes, on a stand-in for the kanban tools. The Desktop half runs in Node
+  against stand-ins for the SDK, on the view that the backend serves for the demo scenario.
+- `dev/contract_check.py` makes the same moves on a real board in a scratch Hermes, so the stand-in
+  cannot drift from the core.
+- `dev/seed_demo.py` fills an empty demo board with an invented team's week.
+- `dev/scratch-env.sh` runs a command in a throwaway Hermes environment.
 
-The Telegram tests use real python-telegram-bot objects with an offline fake Bot API (no
-network, no token). HTTP tests use generated signing keys; the browser test uses system `chromium`
-and a synthetic Telegram SDK. Without PTB or Playwright/Chromium their respective tests are skipped.
-
-`dev/scratch-env.sh` runs a command with a throwaway `HERMES_HOME` and Kanban DB, a clean
-environment, `KUBECONFIG=/dev/null`, stub cluster and forge CLIs first in `PATH`, a `git` that
-refuses `push`, no global git config, and a 2 GiB memory cap (it refuses to run without one). It
-keeps your real `HOME`, because Hermes finds its dependency environment there. Use it for every
-integration test, with synthetic fixtures only. For a demo against a throwaway local
-[kind](https://kind.sigs.k8s.io/) cluster, set `CW_KIND_KUBECONFIG` to the kubeconfig that
-`kind create cluster --kubeconfig <file>` wrote: only `kubectl` then reaches that cluster (loopback
-servers and `kind-*` names only; options that pick another cluster or identity are refused).
-
-The demo launcher used for the video is not part of the plugin.
+Words are defined in `GLOSSARY.md`. Decisions are in `docs/adr/`.
 
 ## License
 
-MIT
+MIT. Chronomancer builds on the Hermes Kanban, which does the hard part: durable cards, atomic
+claims, and the dispatcher.
