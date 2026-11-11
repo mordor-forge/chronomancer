@@ -15,6 +15,7 @@ export const Badge = marker('Badge'), Button = marker('Button'), Codicon = marke
 export const ConfirmDialog = marker('ConfirmDialog'), ErrorState = marker('ErrorState'), Tip = marker('Tip')
 export const ROUTES_AREA = 'routes', SIDEBAR_NAV_AREA = 'sidebar.nav', PALETTE_AREA = 'palette'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' }
+export const KANBAN_CARD_AREAS = { badges: 'kanban.card.badges' }
 export const atom = value => ({ get: () => value })
 export const useValue = a => a.get()
 export const host = G.host
@@ -81,11 +82,14 @@ try {
       if (!(i in G.slots)) G.slots[i] = { current: initial }
       return G.slots[i]
     },
-    host: { state: { viewport: { get: () => G.viewport } }, navigations: [], notices: [],
-            navigate: path => G.host.navigations.push(path), notify: n => G.host.notices.push(n) },
+    host: { state: { viewport: { get: () => G.viewport } }, navigations: [], notices: [], events: {},
+            navigate: path => G.host.navigations.push(path), notify: n => G.host.notices.push(n),
+            onEvent: (type, fn) => { G.host.events[type] = fn; return () => {} } },
     viewport: { width: 1400, height: 900, narrow: false },
     invalidated: [],
+    cacheListeners: [],
     queryClient: {
+      getQueryCache: () => ({ subscribe: fn => { G.cacheListeners.push(fn); return () => { G.disposedCache = true } } }),
       prefetchQuery: async options => options.queryFn(),
       invalidateQueries: async filter => { G.invalidated.push(filter) }
     }
@@ -93,6 +97,7 @@ try {
   const restCalls = []
   let restError = null
   const contributions = []
+  const disposers = []
   const stored = {}
   const ctx = {
     rest: async (path, opts) => {
@@ -104,7 +109,8 @@ try {
     storage: { get: key => stored[key], set: (key, value) => { stored[key] = value } },
     i18n: { register: b => Object.assign(bundles, b), t },
     register: c => { contributions.push(c); return () => {} },
-    registerMany: cs => { contributions.push(...cs); return () => {} }
+    registerMany: cs => { contributions.push(...cs); return () => {} },
+    onDispose: fn => disposers.push(fn)
   }
 
   // -- helpers ------------------------------------------------------------------------------
@@ -343,6 +349,24 @@ try {
              counts: { clashes: 0, busy: 0, planned: 0, running: 0, attention: 0, tray: 0 },
              summary: { headline: 'Nothing is planned.', facts: [], chip: 'no slots', tip: 'Nothing is planned.' } })
   out.empty = { texts: texts(page()), bars: bars(page()).length }
+
+  // Kanban badges: registered from a plan that was read, again only when a label changes
+  const emit = (data, key = [plugin.id, 'plan', '2d']) => G.cacheListeners.forEach(fn => fn({ type: 'updated', query: { queryKey: key, state: { data } } }))
+  const before = contributions.length
+  emit(DATA)
+  emit(DATA, [plugin.id, 'plan', 'week'])
+  emit({ badges: { t_x: { label: 'slot Mon 09:00' } } }, ['other-plugin', 'plan'])
+  G.cacheListeners.forEach(fn => fn({ type: 'observerAdded', query: { queryKey: [plugin.id, 'plan', '2d'], state: {} } }))
+  const decorate = byId('slot').data.decorate
+  out.badges = { registrations: contributions.length - before, area: byId('slot').area, disposers: disposers.length,
+                 shown: Object.fromEntries(Object.keys(VIEW.badges).map(id => [id, decorate({ id, status: 'scheduled' }, {})])), unknown: decorate({ id: 't_none' }, {}) }
+  emit({ ...DATA, badges: {} })
+  out.badgesAfter = { registrations: contributions.length - before, gone: byId('slot').data.decorate({ id: Object.keys(VIEW.badges)[0] }, {}) }
+
+  // the backend's event reads the plan again at once
+  const seen = G.invalidated.length
+  Object.entries(G.host.events).forEach(([, fn]) => fn({ payload: {} }))
+  out.event = { names: Object.keys(G.host.events), invalidated: G.invalidated.length - seen }
 
   // status-bar chip and palette
   setQuery(DATA)

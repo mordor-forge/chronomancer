@@ -148,6 +148,22 @@ def test_the_headline_without_any_slot(planner, kanban):
     assert (summary["headline"], summary["chip"]) == ("1 card runs now. Nothing else is planned.", "1 running")
 
 
+def test_badges_for_the_kanban_board(busy_plan, kanban, clock):
+    view = views.owner_view(busy_plan, horizon_key="day")           # every slot gets one, also beyond the horizon
+    assert view["badges"] == {
+        "t_a": {"label": "clash Wed 14:00", "tone": "red", "tooltip": "Chronomancer. Wed 11 Nov 14:00 to 16:00. Starts in 4 h."},
+        "t_b": {"label": "clash Wed 15:00", "tone": "red", "tooltip": "Chronomancer. Wed 11 Nov 15:00 to 16:00. Starts in 5 h."},
+        "t_far": {"label": "slot Thu 09:00", "tone": "blue", "tooltip": "Chronomancer. Thu 19 Nov 09:00 to 10:00. Starts in 7 d 23 h."}}
+    clock.now = at(15)
+    busy_plan.run_due()
+    kanban.set("t_a", status="running", started_at=at(14))
+    badges = views.owner_view(busy_plan)["badges"]
+    assert "t_a" not in badges                                       # the board itself shows that a card runs
+    assert (badges["t_b"]["label"], badges["t_b"]["tone"]) == ("released Wed 15:00", "green")
+    busy_plan.store.put_slot("", "t_far", start_ts=at(9), estimate_s=600, state="missed", parked=False, set_by="owner", now=NOW)
+    assert views.owner_view(busy_plan)["badges"]["t_far"]["label"] == "missed its slot"
+
+
 def test_tray_cards_say_what_happens_to_them(busy_plan):
     tray = {i["task_id"]: i for i in views.owner_view(busy_plan)["tray"]}
     assert tray["t_c"]["line"] == "Ready. The Kanban starts it without the plan."

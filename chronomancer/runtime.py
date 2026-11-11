@@ -27,6 +27,8 @@ from .timezones import local_tz
 logger = logging.getLogger(__name__)
 
 DB_FILE = "plan.db"
+PLUGIN_ID = "chronomancer"
+EVENT = "plan.changed"          # reaches the page as plugin.chronomancer.plan.changed
 
 SETTING_KEYS = ("board", "timezone", "default_estimate_minutes", "comment_on_release")
 _MISSING = object()
@@ -149,6 +151,18 @@ def detach(key: str, runtime: Optional[Runtime] = None) -> None:
         target.timer.stop()
 
 
+def announce() -> None:
+    """Tell the Desktop windows connected to this process that the plan changed. The page also
+    polls, so this only makes a change show at once; in a process without Desktop clients it does
+    nothing."""
+    try:
+        from hermes_cli.plugin_events import broadcast_plugin_event
+
+        broadcast_plugin_event(PLUGIN_ID, EVENT, {})
+    except Exception:
+        logger.debug("chronomancer: no Desktop event sent", exc_info=True)
+
+
 def connect_file(path: Path) -> sqlite3.Connection:
     """A plain connection to the plan database. It sets no journal mode: the file keeps the mode
     that Hermes chose for it (see ``build``)."""
@@ -177,5 +191,5 @@ def build(data_dir: Any, *, dispatch: Optional[Callable[[str, dict], Any]], read
     settings = Settings(read_setting)
     settings.refresh()
     planner = Planner(Store(lambda: connect_file(db)), Board(dispatch), setting=settings.get,
-                      tz=lambda: local_tz(settings.get("timezone") or None))
+                      tz=lambda: local_tz(settings.get("timezone") or None), changed=announce)
     return attach(str(data_dir), planner, settings, timer=timer)

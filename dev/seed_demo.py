@@ -62,6 +62,9 @@ CARDS = (
     ("review", "Draft the monthly incident review", "scribe", ()),
     ("lockfiles", "Refresh the dependency lockfiles", "builder", ("repo:web", "repo:infra")),
     ("certs", "Renew the TLS certificates", "keeper", ("cluster:prod",)),
+    ("failover", "Rehearse the database failover", "builder", ("db:main", "cluster:prod")),
+    ("changelog", "Publish the changelog for web v2", "scribe", ("repo:web", "project:shop")),
+    ("keys", "Rotate the backup encryption keys", "keeper", ("op:backup",)),
     # no slot: these wait in the tray
     ("autoscaler", "Tune the autoscaler limits", "builder", ("cluster:prod",)),
     ("previews", "Clean up old preview deployments", "builder", ("repo:web",)),
@@ -126,6 +129,9 @@ def scenario(stage: Stage, planner: Planner, clock: Any, now: int) -> dict[str, 
     plan("review", day(1, 14), 90)
     plan("lockfiles", day(2, 10), 45)
     plan("certs", day(3, 9), 30)
+    plan("failover", day(4, 10), 180)
+    plan("changelog", day(4, 15), 60)
+    plan("keys", day(5, 11), 45)
 
     clock.now = t - 5 * H                          # the gateway was down in the night: the image rebuild is missed
     planner.run_due()

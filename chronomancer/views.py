@@ -176,6 +176,27 @@ def log_view(planner: Planner, entry: LogEntry) -> dict[str, Any]:
             "quiet": entry.action in _QUIET}  # label housekeeping: the page shows it only on request
 
 
+# ---- badges on Kanban cards ----
+
+def badge(planner: Planner, snap: Snapshot, item: Item) -> Optional[dict[str, str]]:
+    """A short label for the card's tile on the Kanban board, or None when the plan has nothing to add."""
+    slot = item.slot
+    if slot is None or item.phase in (DONE, RUNNING, UNPLANNED):
+        return None
+    at = datetime.fromtimestamp(slot.start_ts, planner.tz() or timezone.utc).strftime("%a %H:%M")
+    clash = any(c.kind == clashes.CLASH for c in snap.clashes_of(item.task_id))
+    if item.phase in (PLANNED_, DUE):
+        label, tone = (f"clash {at}", "red") if clash else (f"slot {at}", "blue")
+    elif item.phase == WAITING:
+        label, tone = f"released {at}", "green"
+    elif item.phase == MISSED_:
+        label, tone = "missed its slot", "orange"
+    else:
+        label, tone = "not released", "orange"
+    return {"label": label, "tone": tone, "tooltip": f"Chronomancer. {planner.span_text(slot.start_ts, slot.end_ts)}. "
+                                                     f"{_status_line(planner, item, snap.now)}"}
+
+
 # ---- the headline ----
 
 def _count(n: int, one: str, many: str) -> str:
@@ -261,6 +282,7 @@ def owner_view(planner: Planner, *, horizon_key: Any = DEFAULT_HORIZON, board: O
                   + [{"name": name, "exclusive": False, "description": "From the board.", "cards": count, "derived": True}
                      for name, count in sorted(used.items()) if name not in known],
         "counts": counts, "summary": summary(planner, snap, counts),
+        "badges": {i.task_id: b for i in snap.items for b in [badge(planner, snap, i)] if b},
         "log": [log_view(planner, e) for e in planner.store.log_tail(40)],
     }
 

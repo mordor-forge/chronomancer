@@ -245,6 +245,20 @@ def test_loading_errors_and_an_empty_plan(run):
         assert text in empty["texts"]
 
 
+def test_kanban_cards_get_the_badge_the_backend_wrote(run):
+    out, view, ids = run
+    badges = out["badges"]
+    assert (badges["area"], badges["registrations"], badges["disposers"], badges["unknown"]) == ("kanban.card.badges", 1, 1, None)
+    assert badges["shown"] == view["badges"]
+    assert badges["shown"][ids["rotate"]]["label"] == "clash Wed 10:15" and badges["shown"][ids["notes"]]["label"] == "slot Wed 13:00"
+    assert out["badgesAfter"] == {"registrations": 2, "gone": None}            # a changed plan is painted again
+
+
+def test_a_change_announced_by_the_backend_reads_the_plan_again(run):
+    out, _view, _ids = run
+    assert out["event"] == {"names": ["plugin.chronomancer.plan.changed"], "invalidated": 1}
+
+
 def test_the_status_bar_chip(run):
     out, view, _ids = run
     assert out["chip"] == {"tip": f"Chronomancer. {view['summary']['tip']}", "text": "next 10:15 · 3 clashes · 1 needs a look", "icon": "zap"}

@@ -44,7 +44,8 @@ def test_the_scenario_leaves_every_kind_of_card(seeded, kanban, clock):
     assert phases == {
         "backup": "done", "nightly": "missed", "index": "running", "ingress": "running", "rotate": "planned",
         "rollout": "planned", "firewall": "planned", "notes": "planned", "orders": "planned", "access": "planned",
-        "review": "planned", "lockfiles": "planned", "certs": "planned",
+        "review": "planned", "lockfiles": "planned", "certs": "planned", "failover": "planned",
+        "changelog": "planned", "keys": "planned",
         "autoscaler": "unplanned", "previews": "unplanned", "logs": "unplanned", "status-page": "unplanned"}
     statuses = {key: kanban.status(task_id) for key, task_id in ids.items()}
     assert (statuses["autoscaler"], statuses["previews"], statuses["logs"], statuses["status-page"]) == (
@@ -86,7 +87,7 @@ def test_the_page_for_the_scenario(seeded):
     view = views.owner_view(planner, horizon_key="2d")
     assert [lane["label"] for lane in view["lanes"]] == ["builder", "keeper", "scribe"]
     assert view["counts"] == {"clashes": 3, "busy": 1, "planned": 7, "running": 2, "attention": 1, "tray": 4}
-    assert view["later"]["count"] == 2 and view["later"]["next_title"] == "Refresh the dependency lockfiles"
+    assert view["later"]["count"] == 5 and view["later"]["next_title"] == "Refresh the dependency lockfiles"
     assert len(view["items"]) == 10 and len(view["tray"]) == 4       # the backup ran before this horizon starts
     week = views.owner_view(planner, horizon_key="week")
-    assert len(week["items"]) == 13 and week["later"]["count"] == 0
+    assert len(week["items"]) == 16 and week["later"]["count"] == 0

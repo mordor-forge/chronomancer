@@ -478,6 +478,24 @@ def test_an_agent_sees_what_others_changed_since_its_last_look(planner, kanban, 
     assert [e.actor for e in planner.changes_since_last_look("agent:other", mark=False)] == [AGENT, OWNER, AGENT, "timer"]
 
 
+def test_every_change_is_announced_and_a_failing_listener_changes_nothing(planner, kanban, clock):
+    heard = []
+    planner.changed = lambda: heard.append(1)
+    kanban.add("t_1", status="blocked")
+    planner.set_slot("t_1", at(14), actor=AGENT)
+    planner.pin("t_1", True, actor=OWNER)
+    clock.now = at(14)
+    planner.run_due()
+    assert len(heard) == 3
+
+    def broken():
+        raise RuntimeError("no window")
+
+    planner.changed = broken
+    planner.clear("t_1", actor=OWNER)                               # the move still goes through
+    assert planner.store.get_slot("", "t_1") is None
+
+
 def test_who_and_times_in_words(planner):
     assert [planner.who(a) for a in (OWNER, "timer", AGENT)] == ["the owner", "the timer", "profile assistant"]
     assert planner.fmt(at(14)) == "Wed 11 Nov 14:00"

@@ -14,7 +14,7 @@
  *                    moves (cast now, move, pin, unplan);
  *     the tray       the open cards that have no slot;
  *     the chronicle  who changed what in the plan: you, the orchestrator, or the timer.
- * - Status-bar chip and palette command.
+ * - Status-bar chip, palette command, and a badge with the slot on the cards of the Kanban board.
  *
  * Plain ESM, loaded uncompiled: jsx() calls, no JSX. Imports only @hermes/plugin-sdk, react and
  * react/jsx-runtime. Data comes from the plugin's own backend (dashboard/plugin_api.py) by polling.
@@ -36,6 +36,7 @@ const {
   ConfirmDialog,
   ErrorState,
   host,
+  KANBAN_CARD_AREAS,
   PALETTE_AREA,
   queryClient,
   ROUTES_AREA,
@@ -1524,6 +1525,41 @@ export default {
         data: { id: `${ID}.open`, label: t('open'), keywords: ['plan', 'slot', 'kanban', 'timeline', 'schedule', 'clash'], run: () => host.navigate(PATH) }
       }
     ])
+
+    const mine = event => {
+      const key = event && event.query && event.query.queryKey
+
+      return Array.isArray(key) && key[0] === ID && key[1] === 'plan'
+    }
+
+    // Kanban card badges are a pure lookup: rebuilt from each plan the page or the chip reads, and
+    // registered again only when a label changes.
+    if (KANBAN_CARD_AREAS && typeof queryClient.getQueryCache === 'function') {
+      let painted = ''
+
+      const stop = queryClient.getQueryCache().subscribe(event => {
+        const data = event && event.type === 'updated' && mine(event) ? event.query.state.data : null
+        const badges = (data && data.badges) || null
+        const signature = badges ? JSON.stringify(badges) : painted
+
+        if (badges && signature !== painted) {
+          painted = signature
+          ctx.register({ id: 'slot', area: KANBAN_CARD_AREAS.badges, data: { decorate: tile => badges[tile.id] || null } })
+        }
+      })
+
+      if (typeof ctx.onDispose === 'function') {
+        ctx.onDispose(stop)
+      }
+    }
+
+    // The backend announces a change of the plan (a tool call of the orchestrator, the timer): read
+    // it again at once. Polling stays: the event reaches only windows connected to that process.
+    const listen = typeof ctx.onEvent === 'function' ? ctx.onEvent : typeof host.onEvent === 'function' ? host.onEvent : null
+
+    if (listen) {
+      listen(`plugin.${ID}.plan.changed`, () => void queryClient.invalidateQueries({ queryKey: [ID] }))
+    }
 
     queryClient.prefetchQuery({ queryKey: planKey('2d'), queryFn: () => fetchPlan('2d') }).catch(() => {})
   }

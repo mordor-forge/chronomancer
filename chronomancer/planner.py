@@ -109,10 +109,20 @@ class Change:
 
 class Planner:
     def __init__(self, store: Store, board: Board, *, setting: Callable[..., Any], tz: Callable[[], Any],
-                 clock: Callable[[], float] = time.time, wake: Callable[[], None] = lambda: None):
+                 clock: Callable[[], float] = time.time, wake: Callable[[], None] = lambda: None,
+                 changed: Callable[[], None] = lambda: None):
         self.store, self.board = store, board
         self.setting, self.tz, self.clock, self.wake = setting, tz, clock, wake
+        self.changed = changed          # called after every change of the plan, so open pages can read it again
         self._pruned_at = 0
+
+    def _record(self, **entry: Any) -> None:
+        """Write one change to the log and tell whoever watches the plan."""
+        self.store.add_log(**entry)
+        try:
+            self.changed()
+        except Exception:
+            logger.debug("%s: could not announce a change", MARK, exc_info=True)
 
     # ---- settings and words ----
 
@@ -267,7 +277,7 @@ class Planner:
             if card.status in PARKABLE:  # do not leave a card parked that has no slot
                 self._quietly(lambda: self.board.release(board, task_id))
             raise
-        self.store.add_log(ts=now, actor=actor, action="move" if old else "plan", board=board, task_id=task_id,
+        self._record(ts=now, actor=actor, action="move" if old else "plan", board=board, task_id=task_id,
                            detail={"title": card.title, "start": start_ts, "estimate_s": estimate,
                                    "from": old.start_ts if old else None,
                                    "from_estimate_s": old.estimate_s if old else None,
@@ -288,7 +298,7 @@ class Planner:
         note = f"released now: {_status_note(released)}" if released else f"the card was already {card.status}"
         slot = self.store.put_slot(board, task_id, start_ts=now, estimate_s=self._estimate(estimate_s, old),
                                    state=RELEASED, parked=False, set_by=actor, now=now, note=note, released_at=now)
-        self.store.add_log(ts=now, actor=actor, action="now", board=board, task_id=task_id,
+        self._record(ts=now, actor=actor, action="now", board=board, task_id=task_id,
                            detail={"title": card.title, "start": now, "from": old.start_ts if old else None,
                                    "note": note})
         if released:
@@ -305,7 +315,7 @@ class Planner:
         self._check_pin(old, actor, "clear")
         card = self._quietly(lambda: self.board.card(board, task_id, fresh=True))
         self.store.delete_slot(board, task_id)
-        self.store.add_log(ts=now, actor=actor, action="clear", board=board, task_id=task_id,
+        self._record(ts=now, actor=actor, action="clear", board=board, task_id=task_id,
                            detail={"title": card.title if card else task_id, "from": old.start_ts})
         note = ""
         if card and card.status in RELEASABLE:
@@ -326,7 +336,7 @@ class Planner:
         slot = self.store.set_pinned(board, task_id, bool(pinned))
         card = self._quietly(lambda: self.board.card(board, task_id))
         if old.pinned != bool(pinned):
-            self.store.add_log(ts=now, actor=actor, action="pin" if pinned else "unpin", board=board, task_id=task_id,
+            self._record(ts=now, actor=actor, action="pin" if pinned else "unpin", board=board, task_id=task_id,
                                detail={"title": card.title if card else task_id, "start": old.start_ts})
         return Change("pin" if pinned else "unpin", task_id, card, slot, old)
 
@@ -342,7 +352,7 @@ class Planner:
         text = clean(description, 160) if description is not None else None
         label = self.store.put_label(name, exclusive=exclusive, description=text, by=actor, now=int(self.clock()))
         if old is None or old.exclusive != label.exclusive:
-            self.store.add_log(ts=int(self.clock()), actor=actor, action="label",
+            self._record(ts=int(self.clock()), actor=actor, action="label",
                                detail={"label": name, "exclusive": label.exclusive, "new": old is None})
         return label
 
@@ -350,7 +360,7 @@ class Planner:
         name = self._label_name(name)
         if not self.store.delete_label(name):
             raise PlanError(f"There is no label {name}.")
-        self.store.add_log(ts=int(self.clock()), actor=actor, action="unlabel", detail={"label": name})
+        self._record(ts=int(self.clock()), actor=actor, action="unlabel", detail={"label": name})
 
     def tag(self, task_id: str, *, add: Iterable[str] = (), remove: Iterable[str] = (), actor: str,
             board: Optional[str] = None) -> list[str]:
@@ -366,7 +376,7 @@ class Planner:
                 self.label(name, actor=actor)
         now_has = self.store.change_card_labels(board, task_id, add=add, remove=remove)
         if set(now_has) != set(have):
-            self.store.add_log(ts=int(self.clock()), actor=actor, action="tag", board=board, task_id=task_id,
+            self._record(ts=int(self.clock()), actor=actor, action="tag", board=board, task_id=task_id,
                                detail={"title": card.title, "labels": now_has})
         return now_has
 
@@ -381,7 +391,7 @@ class Planner:
         for slot in self.store.exhausted(now, lease_s=LEASE_S, max_attempts=MAX_ATTEMPTS):
             note = f"not released after {MAX_ATTEMPTS} attempts: {slot.note or 'the board could not be reached'}"
             if self.store.finish(slot, FAILED, note, now):
-                self.store.add_log(ts=now, actor=TIMER, action="failed", board=slot.board, task_id=slot.task_id,
+                self._record(ts=now, actor=TIMER, action="failed", board=slot.board, task_id=slot.task_id,
                                    detail={"start": slot.start_ts, "note": note})
         if now - self._pruned_at > 3600:
             self._pruned_at = now
@@ -415,7 +425,7 @@ class Planner:
         if not self.store.finish(slot, state, note, now):
             return None  # the slot was moved or cleared meanwhile: the newer plan wins
         action = {RELEASED: "release", MISSED: "missed", FAILED: "failed"}[state]
-        self.store.add_log(ts=now, actor=TIMER, action=action, board=slot.board, task_id=slot.task_id,
+        self._record(ts=now, actor=TIMER, action=action, board=slot.board, task_id=slot.task_id,
                            detail={"title": card.title if card else slot.task_id, "start": slot.start_ts, "note": note})
         if released:
             self._comment(slot.board, slot.task_id,

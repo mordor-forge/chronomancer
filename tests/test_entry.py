@@ -105,6 +105,21 @@ def test_the_timer_releases_a_due_card_without_any_call(plugin_entry, kanban):
     assert planner.store.log_tail()[0].actor == "timer" and ctx.hooks == {}
 
 
+def test_announce_does_nothing_without_hermes_and_sends_one_event_with_it(plugin_entry, monkeypatch):
+    import sys
+    import types
+    plugin_entry()
+    runtime = plugin_entry.module.runtime
+    runtime.announce()                                               # no hermes_cli here: silently nothing
+    sent = []
+    events = types.ModuleType("hermes_cli.plugin_events")
+    events.broadcast_plugin_event = lambda plugin, event, payload=None: sent.append((plugin, event, payload))
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugin_events", events)
+    runtime.get(str(plugin_entry.data_dir)).planner.label("repo:web", actor="owner")
+    assert sent == [("chronomancer", "plan.changed", {})]
+
+
 # ---- the timer thread ----
 
 def test_timer_ticks_on_wake_sleeps_until_the_next_due_and_stops():
