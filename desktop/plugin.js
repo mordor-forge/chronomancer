@@ -61,6 +61,7 @@ const ROW_GAP = 6
 const LANE_PAD = 9
 const MIN_BAR = 10
 const CHRONICLE = 12 // the changes shown before "show all"
+const TRAY_FIND = 8 // a tray longer than this gets a filter field
 const INSIDE = 150 // px: a body at least this wide carries its title inside
 const TAG = { day: 260, '2d': 200, week: 130 } // px: the most room a title beside a body may take
 
@@ -91,7 +92,9 @@ const EN = {
   tray: {
     title: 'Unplanned',
     empty: 'Every open card has a slot.',
-    hint: 'Cards without a slot. Drag one onto the timeline.'
+    hint: 'Cards without a slot. Drag one onto the timeline.',
+    find: 'Filter the cards',
+    none: 'No card matches the filter.'
   },
   scroll: {
     title: 'Selected card',
@@ -489,7 +492,8 @@ const CSS = `
 .chm-input:focus-visible { outline: 2px solid var(--chm-ink); outline-offset: 1px; }
 .chm-clash { border-left: 3px solid var(--ui-red); padding: 0.1875rem 0 0.1875rem 0.5625rem; font-size: 0.8125rem; background: linear-gradient(90deg, ${mix('var(--ui-red)', 10)}, transparent 70%); border-radius: 0 6px 6px 0; }
 .chm-clash[data-kind='busy'] { border-left-color: var(--ui-yellow); border-left-style: dashed; background: none; }
-.chm-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.3125rem; }
+.chm-list, .chm-tray { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.3125rem; }
+.chm-tray { max-height: min(24rem, 52vh); overflow-y: auto; overscroll-behavior: contain; padding: 2px 6px 2px 2px; }
 .chm-row { display: flex; align-items: center; gap: 0.5rem; width: 100%; box-sizing: border-box; min-width: 0; padding: 0.4375rem 0.625rem; border-radius: 10px; border: 1px solid var(--chm-line);
   background: linear-gradient(90deg, ${mix('var(--lane, var(--chm-arc))', 8)}, transparent 60%); color: var(--chm-ink); font: inherit; font-size: 0.8125rem; text-align: left; cursor: pointer;
   touch-action: none; transition: box-shadow 0.15s ease, border-color 0.15s ease; }
@@ -1171,17 +1175,29 @@ function Scroll({ item, data, color, view, t }) {
 
 // ── the tray and the chronicle ──────────────────────────────────────────────
 
-function Tray({ data, view, t }) {
+function Tray({ data, view, text, setText, t }) {
   const colors = Object.fromEntries(view.layout.lanes.map(lane => [lane.profile, lane.color]))
-  const rows = data.tray.filter(item => !view.filters.profiles.has(item.assignee))
+  const mine = data.tray.filter(item => !view.filters.profiles.has(item.assignee))
+  // every word that is typed must be in the card's title, id, status, profile or labels
+  const words = text.toLowerCase().split(/\s+/).filter(Boolean)
+  const rows = words.length
+    ? mine.filter(item => {
+        const hay = [item.title, item.task_id, item.status, item.assignee, ...item.labels].join(' ').toLowerCase()
+
+        return words.every(word => hay.includes(word))
+      })
+    : mine
 
   return el(
     'section',
     { className: 'chm-section' },
-    el('h2', {}, t('tray.title'), jsx(Badge, { variant: 'muted', children: String(rows.length) })),
+    el('h2', {}, t('tray.title'), jsx(Badge, { variant: 'muted', children: words.length ? `${rows.length} / ${mine.length}` : String(mine.length) })),
+    mine.length > TRAY_FIND
+      ? field({ type: 'search', value: text, placeholder: t('tray.find'), 'aria-label': t('tray.find'), onChange: event => setText(event.target.value) })
+      : null,
     rows.length
       ? jsx('ul', {
-          className: 'chm-list',
+          className: 'chm-tray',
           children: rows.map(item =>
             jsx('li', {
               children: el(
@@ -1203,8 +1219,8 @@ function Tray({ data, view, t }) {
             }, item.task_id)
           )
         })
-      : jsx('p', { className: 'chm-p', children: t('tray.empty') }),
-    rows.length ? jsx('p', { className: 'chm-quiet', children: t('tray.hint') }) : null
+      : jsx('p', { className: 'chm-p', children: t(mine.length ? 'tray.none' : 'tray.empty') }),
+    mine.length ? jsx('p', { className: 'chm-quiet', children: t('tray.hint') }) : null
   )
 }
 
@@ -1265,6 +1281,7 @@ function ChronomancerPage() {
   const [pending, setPending] = useState(null) // the card whose "cast now" dialog is open
   const [burst, setBurst] = useState(null) // { id, seed }: sparks on a bar after a move
   const [allLog, setAllLog] = useState(false) // the chronicle with label housekeeping
+  const [trayText, setTrayText] = useState('') // the words that narrow a long tray
   const frame = useRef(null)
   const live = useRef({})
   const query = usePlan(horizon)
@@ -1446,7 +1463,7 @@ function ChronomancerPage() {
           jsx('h2', { children: t('scroll.title') }),
           chosen ? jsx(Scroll, { item: chosen, data, color: colorOf(chosen.assignee), view, t }, chosen.task_id) : jsx('p', { className: 'chm-p', children: t('scroll.none') })
         ),
-        jsx(Tray, { data, view, t })
+        jsx(Tray, { data, view, text: trayText, setText: setTrayText, t })
       ),
       jsx(Chronicle, { data, all: allLog, setAll: setAllLog, t }, 'chronicle')
     ]

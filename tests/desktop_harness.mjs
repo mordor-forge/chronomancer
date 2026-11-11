@@ -327,6 +327,31 @@ try {
   out.filterClashes = bars(page()).filter(b => b.props['data-dim'] === '0').length
   out.clear = withClass(page(), 'chm-plain').map(label).includes('Clear filters')
 
+  // a long tray (a real board has dozens of unplanned cards): the list is a scroll box, and a field narrows it
+  G.slots = []
+  const trayPart = () => withClass(page(), 'chm-section').find(n => label(nodes(n, 'h2')[0]).startsWith('Unplanned'))
+  const trayState = () => ({ field: nodes(trayPart(), 'input').length, box: withClass(trayPart(), 'chm-tray').length,
+                             rows: withClass(trayPart(), 'chm-row').length, badge: label(nodes(nodes(trayPart(), 'h2')[0], 'Badge')[0]) })
+  out.shortTray = trayState()
+  const many = Array.from({ length: 12 }, (_, i) => ({ ...VIEW.tray[i % VIEW.tray.length], task_id: `t_many${i}`,
+    title: `Card ${i} ${i % 3 === 0 ? 'OPS-12 logs read-only' : 'something else'}`, short: `Card ${i}`, labels: i === 5 ? ['repo:web'] : [] }))
+  setQuery({ ...DATA, tray: many })
+  const type = value => nodes(trayPart(), 'input')[0].props.onChange({ target: { value } })
+  out.longTray = { ...trayState(), name: nodes(trayPart(), 'input')[0].props['aria-label'] }
+  type('  ops-12 LOGS ')
+  out.longTrayWords = trayState()
+  type('logs 9')
+  out.longTrayEvery = withClass(trayPart(), 'chm-row-title').map(label)
+  type('t_many7')
+  out.longTrayId = withClass(trayPart(), 'chm-row-title').map(label)
+  type('repo:web')
+  out.longTrayLabel = withClass(trayPart(), 'chm-row-title').map(label)
+  type('no such card')
+  out.longTrayNone = { ...trayState(), said: texts(trayPart()).includes('No card matches the filter.') }
+  type('')
+  out.longTrayCleared = trayState().rows
+  setQuery(DATA)
+
   // narrow: a list, no loom
   G.slots = []
   G.viewport = { width: 390, height: 800, narrow: true }

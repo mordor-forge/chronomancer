@@ -218,6 +218,19 @@ def test_the_horizon_switch_reads_another_view_and_is_remembered(run):
                               "stored": {"horizon": "week"}, "poll": [5000]}
 
 
+def test_a_long_tray_is_a_scroll_box_with_a_filter_field(run):
+    out, view, _ids = run
+    few = len(view["tray"])
+    assert few <= 8 and out["shortTray"] == {"field": 0, "box": 1, "rows": few, "badge": str(few)}   # the demo: no field
+    assert out["longTray"] == {"field": 1, "box": 1, "rows": 12, "badge": "12", "name": "Filter the cards"}
+    assert out["longTrayWords"] == {"field": 1, "box": 1, "rows": 4, "badge": "4 / 12"}     # any case, parts of words
+    assert out["longTrayEvery"] == ["Card 9"]                                                # every word must match
+    assert out["longTrayId"] == ["Card 7"] and out["longTrayLabel"] == ["Card 5"]            # by card id, by label
+    assert out["longTrayNone"] == {"field": 1, "box": 0, "rows": 0, "badge": "0 / 12", "said": True}
+    assert out["longTrayCleared"] == 12
+    assert "overflow-y: auto" in SOURCE.split("\n.chm-tray {")[1].split("}")[0]              # its own rule: a scroll box
+
+
 def test_filters(run):
     out, _view, _ids = run
     assert out["filterProfile"] == {"lanes": ["builder", "keeper"], "tray": 3}
