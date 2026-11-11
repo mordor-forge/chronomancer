@@ -101,6 +101,8 @@ def test_the_page_gets_lanes_items_tray_labels_counts_and_log(busy_plan):
         {"name": "repo:web", "exclusive": False, "description": "", "cards": 1, "derived": False}]
     assert view["log"][0]["text"] == 'The owner pinned "Rotate database keys" at Wed 11 Nov 15:00.'
     assert view["log"][0]["by_owner"] is True and view["log"][0]["when"] == "Wed 11 Nov 10:00"
+    quiet = [e["text"] for e in view["log"] if e["quiet"]]           # label housekeeping: shown only on request
+    assert len(quiet) == 4 and all("label" in text for text in quiet) and view["log"][0]["quiet"] is False
 
 
 def test_one_card_on_the_page(busy_plan):

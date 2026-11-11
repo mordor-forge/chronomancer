@@ -17,6 +17,7 @@ HORIZONS = {"day": (2, 24, 1), "2d": (3, 48, 3), "week": (0, 168, 12)}   # hours
 DEFAULT_HORIZON = "2d"
 NIGHT = (22, 6)             # the quiet band on the timeline, local hours
 _NOT_MOVABLE = ("running", "review", "done", "archived", "triage")
+_QUIET = ("label", "unlabel", "tag")
 
 _TRAY_HINTS = {
     "triage": "In triage. Specify the card before it can be planned.",
@@ -171,7 +172,8 @@ def log_text(planner: Planner, entry: LogEntry) -> str:
 
 def log_view(planner: Planner, entry: LogEntry) -> dict[str, Any]:
     return {"id": entry.id, "ts": entry.ts, "when": planner.fmt(entry.ts), "actor": entry.actor,
-            "by_owner": entry.actor == OWNER, "task_id": entry.task_id, "text": log_text(planner, entry)}
+            "by_owner": entry.actor == OWNER, "task_id": entry.task_id, "text": log_text(planner, entry),
+            "quiet": entry.action in _QUIET}  # label housekeeping: the page shows it only on request
 
 
 # ---- the headline ----

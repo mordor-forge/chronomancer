@@ -91,7 +91,9 @@ def test_the_loom_has_a_lane_per_profile_and_a_bar_per_slot(run):
     out, view, _ids = run
     wide = out["wide"]
     assert wide["lanes"] == ["builder", "keeper", "scribe"]
-    assert wide["laneColors"] == ["app-color(builder)", "app-color(keeper)", "app-color(scribe)"]   # the app's own profile colours
+    # lanes take the theme's hues in order; red is never a lane, it is the clash colour
+    assert wide["laneColors"] == [f"var(--ui-{hue}, var(--ui-accent))" for hue in ("purple", "cyan", "orange")]
+    assert "--ui-red" not in SOURCE.split("const HUES")[1].split("]")[0]
     assert len(wide["bars"]) == len(view["items"]) == 10 and {b["type"] for b in wide["bars"]} == {"button"}
     by_title = {b["label"].split(",")[0]: b for b in wide["bars"]}
     assert by_title["Rebuild the search index"]["label"] == (
@@ -127,9 +129,12 @@ def test_the_tray_and_the_chronicle(run):
                             {"title": "Clean up old preview deployments", "status": "ready"},
                             {"title": "Archive last quarter's logs", "status": "scheduled"},
                             {"title": "Sketch the status page redesign", "status": "triage"}]
-    assert [e["text"] for e in wide["chronicle"]] == [e["text"] for e in view["log"]]
+    moves = [e["text"] for e in view["log"] if not e["quiet"]]
+    assert [e["text"] for e in wide["chronicle"]] == moves[:12] and len(moves) > 12       # the newest moves first
     assert wide["chronicle"][0] == {"text": 'The owner pinned "Roll out web v2 to production" at Wed 11 Nov 11:30.', "owner": "1", "icon": "account"}
     assert {e["icon"] for e in wide["chronicle"]} == {"account", "watch", "sparkle"}       # you, the timer, an agent
+    assert wide["chronicleMore"] == [f"Show all {len(view['log'])} changes, labels included"]
+    assert out["chronicleAll"] == {"entries": len(view["log"]), "toggle": ["Show fewer"]}
     assert wide["scroll"] == 0                                                              # nothing is selected yet
 
 
@@ -142,7 +147,7 @@ def test_a_selected_slot_opens_its_scroll_with_the_backend_sentences(run):
     for text in (item["line"], item["set_by_text"], f"{item['when']} · {item['estimate']}"):
         assert text in chosen["texts"]
     assert chosen["buttons"] == ["Next free start: Wed 11 Nov 10:45", "Move", "Cast now", "15 min earlier", "15 min later", "Pin", "Unplan", "Add"]
-    assert chosen["inputs"] == [["datetime-local", "2026-11-11T10:15"], ["number", "45"], ["text", ""]]
+    assert chosen["inputs"] == [["datetime-local", "2026-11-11T10:15"], ["number", "45"], ["text", ""]]   # plain inputs: this SDK has no Input
     assert chosen["partners"] == ["Upgrade the ingress controller to 1.12"] and chosen["pressed"] == 1
 
 

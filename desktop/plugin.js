@@ -59,6 +59,7 @@ const ROW_H = 30
 const ROW_GAP = 6
 const LANE_PAD = 9
 const MIN_BAR = 10
+const CHRONICLE = 12 // the changes shown before "show all"
 const INSIDE = 150 // px: a body at least this wide carries its title inside
 const TAG = { day: 260, '2d': 200, week: 130 } // px: the most room a title beside a body may take
 
@@ -122,7 +123,7 @@ const EN = {
     nowBody: title => `"${title}" is released at once and its slot moves to now.`,
     nowAction: 'Cast now'
   },
-  chronicle: { title: 'Changes', empty: 'No changes yet.' },
+  chronicle: { title: 'Changes', empty: 'No changes yet.', all: n => `Show all ${n} changes, labels included`, fewer: 'Show fewer' },
   filter: {
     label: 'Filters',
     clashes: 'Clashes only',
@@ -264,12 +265,8 @@ function hash(text) {
 
 const HUES = ['--ui-purple', '--ui-cyan', '--ui-orange', '--ui-blue', '--ui-green', '--ui-yellow']
 
-/** A profile's colour: the app's own colour for it, else one of the theme's hues. */
-function laneColor(profile, index) {
-  const own = typeof SDK.profileColor === 'function' ? SDK.profileColor(profile) : null
-
-  return own || `var(${HUES[index % HUES.length]}, var(--ui-accent))`
-}
+/** A lane's colour: one of the theme's hues, by lane order. Red stays free for clashes. */
+const laneColor = index => `var(${HUES[index % HUES.length]}, var(--ui-accent))`
 
 /** Bars of one lane, packed into as few rows as fit without overlap. */
 function pack(bars) {
@@ -320,7 +317,7 @@ function layoutOf(data, width, hidden, moved) {
     const rows = pack(bars)
     const height = LANE_PAD * 2 + rows * ROW_H + (rows - 1) * ROW_GAP
 
-    lanes.push({ ...lane, index, color: laneColor(lane.profile, index), bars, top, height })
+    lanes.push({ ...lane, index, color: laneColor(index), bars, top, height })
     top += height
   })
 
@@ -340,135 +337,179 @@ function matches(item, filters) {
 const mix = (color, percent) => `color-mix(in srgb, ${color} ${percent}%, transparent)`
 
 const CSS = `
-.chm { --chm-display: 'Cinzel', 'Cormorant Garamond', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+.chm { --chm-display: 'Cinzel', 'Cormorant Garamond', 'Palatino Linotype', Palatino, 'Book Antiqua', 'URW Palladio L', 'TeX Gyre Pagella', Georgia, serif;
   --chm-mono: var(--dt-font-mono, ui-monospace, monospace);
   --chm-ink: var(--ui-text-primary); --chm-soft: var(--ui-text-secondary); --chm-line: var(--ui-stroke-secondary);
-  --chm-glow: ${mix('var(--ui-accent)', 55)}; --chm-veil: ${mix('var(--ui-accent)', 8)};
+  --chm-arc: var(--ui-accent); --chm-arc2: var(--ui-purple, var(--ui-accent)); --chm-arc3: var(--ui-cyan, var(--ui-accent));
+  --chm-glow: ${mix('var(--chm-arc)', 55)}; --chm-veil: ${mix('var(--chm-arc2)', 10)};
+  --chm-paper: var(--ui-bg-editor, var(--ui-bg-primary, transparent));
   height: 100%; overflow-y: auto; color: var(--chm-ink); }
-.chm-inner { max-width: 92rem; margin: 0 auto; padding: 1.25rem 1.25rem 3rem; display: grid; gap: 1.125rem; }
-.chm h2 { font-family: var(--chm-display); font-size: 0.8125rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+.chm-inner { max-width: 96rem; margin: 0 auto; padding: 1.25rem 1.25rem 3rem; display: grid; gap: 1.25rem; }
+.chm h2 { font-family: var(--chm-display); font-size: 0.8125rem; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
   margin: 0; display: flex; align-items: center; gap: 0.5rem; color: var(--chm-ink); }
-.chm h2::after { content: ''; flex: 1 1 auto; height: 1px; background: linear-gradient(90deg, var(--chm-line), transparent); }
+.chm h2::before { content: '✦'; color: var(--chm-arc); text-shadow: 0 0 8px var(--chm-glow); }
+.chm h2::after { content: ''; flex: 1 1 auto; height: 1px; background: linear-gradient(90deg, ${mix('var(--chm-arc)', 70)}, transparent); }
 .chm-p { font-size: 0.8125rem; margin: 0; color: var(--chm-ink); overflow-wrap: anywhere; }
 .chm-quiet { font-size: 0.75rem; margin: 0; color: var(--chm-ink); opacity: 0.86; overflow-wrap: anywhere; }
-.chm-head { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.25rem; padding: 0.875rem 1rem; border-radius: 14px;
-  border: 1px solid var(--chm-line); background: radial-gradient(120% 160% at 0% 0%, var(--chm-veil), transparent 62%); }
-.chm-astro { flex: 0 0 auto; color: var(--ui-accent); filter: drop-shadow(0 0 7px var(--chm-glow)); }
-.chm-spin { transform-origin: center; animation: chm-spin 90s linear infinite; }
-.chm-titles { flex: 1 1 18rem; min-width: 0; display: grid; gap: 0.25rem; }
-.chm-title { font-family: var(--chm-display); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; margin: 0; }
-.chm-headline { font-size: clamp(1.0625rem, 0.8rem + 1vw, 1.375rem); line-height: 1.25; font-weight: 650; margin: 0; overflow-wrap: anywhere; }
-.chm-facts { display: flex; flex-wrap: wrap; gap: 0.375rem; margin: 0; padding: 0; list-style: none; }
-.chm-fact { display: inline-flex; align-items: center; gap: 0.3125rem; font-size: 0.75rem; padding: 0.125rem 0.5rem; border-radius: 999px;
-  border: 1px solid var(--chm-line); }
-.chm-fact[data-kind='clash'] { border-color: var(--ui-red); }
+
+.chm-head { position: relative; overflow: hidden; display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.5rem; padding: 1.125rem 1.25rem;
+  border-radius: 18px; border: 1px solid ${mix('var(--chm-arc)', 45)};
+  background: radial-gradient(90% 190% at 4% 50%, ${mix('var(--chm-arc)', 20)}, transparent 58%),
+    radial-gradient(70% 160% at 96% 0%, ${mix('var(--chm-arc2)', 20)}, transparent 62%),
+    radial-gradient(60% 140% at 60% 120%, ${mix('var(--chm-arc3)', 12)}, transparent 60%);
+  box-shadow: inset 0 0 0 1px ${mix('var(--chm-ink)', 5)}, 0 0 34px ${mix('var(--chm-arc)', 12)}; }
+.chm-head > * { position: relative; z-index: 1; }
+.chm-sky { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; color: var(--chm-ink); }
+.chm-sky .chm-line { stroke: var(--chm-arc); }
+.chm-twinkle { animation: chm-twinkle 3.6s ease-in-out infinite; }
+.chm-astro { flex: 0 0 auto; overflow: visible; filter: drop-shadow(0 0 9px var(--chm-glow)); }
+.chm-astro .a1 { stroke: var(--chm-arc); } .chm-astro .a2 { stroke: var(--chm-arc2); } .chm-astro .a3 { stroke: var(--chm-arc3); }
+.chm-astro .f1 { fill: var(--chm-arc); } .chm-astro .f3 { fill: var(--chm-arc3); } .chm-astro .ink { stroke: var(--chm-ink); }
+.chm-spin { transform-origin: center; transform-box: fill-box; animation: chm-spin 140s linear infinite; }
+.chm-spin-back { transform-origin: center; transform-box: fill-box; animation: chm-spin 90s linear infinite reverse; }
+.chm-orbit { transform-origin: 0 0; animation: chm-spin 60s linear infinite; }
+.chm-core { transform-origin: center; transform-box: fill-box; animation: chm-breathe 3.2s ease-in-out infinite; }
+.chm-titles { flex: 1 1 26rem; min-width: 0; display: grid; gap: 0.3125rem; }
+.chm-title { font-family: var(--chm-display); font-size: 0.8125rem; font-weight: 700; letter-spacing: 0.42em; text-transform: uppercase; margin: 0;
+  color: var(--chm-arc); text-shadow: 0 0 14px var(--chm-glow); }
+.chm-headline { font-size: clamp(1.125rem, 0.85rem + 1.05vw, 1.5rem); line-height: 1.25; font-weight: 650; letter-spacing: -0.01em; margin: 0; overflow-wrap: anywhere; }
+.chm-facts { display: flex; flex-wrap: wrap; gap: 0.375rem; margin: 0.125rem 0 0; padding: 0; list-style: none; }
+.chm-fact { display: inline-flex; align-items: center; gap: 0.3125rem; font-size: 0.75rem; padding: 0.1875rem 0.5625rem; border-radius: 999px;
+  border: 1px solid var(--chm-line); background: ${mix('var(--chm-paper)', 55)}; }
+.chm-fact[data-kind='clash'] { border-color: var(--ui-red); box-shadow: 0 0 10px ${mix('var(--ui-red)', 35)}; }
 .chm-fact[data-kind='attention'] { border-color: var(--ui-yellow); border-style: dashed; }
-.chm-side { display: grid; gap: 0.375rem; justify-items: end; }
-.chm-seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: 9px; border: 1px solid var(--chm-line); }
+.chm-fact[data-kind='running'] { border-color: var(--ui-green); }
+.chm-side { display: grid; gap: 0.5rem; justify-items: end; }
+.chm-seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; border: 1px solid ${mix('var(--chm-arc)', 50)}; background: ${mix('var(--chm-paper)', 60)}; }
 .chm-seg button, .chm-chip, .chm-plain { font: inherit; color: var(--chm-ink); background: transparent; border: 0; cursor: pointer; }
-.chm-seg button { font-size: 0.75rem; padding: 0.25rem 0.75rem; border-radius: 7px; }
-.chm-seg button[aria-pressed='true'] { background: ${mix('var(--ui-accent)', 22)}; box-shadow: inset 0 0 0 1px var(--ui-accent); font-weight: 600; }
+.chm-seg button { font-family: var(--chm-display); font-size: 0.75rem; letter-spacing: 0.08em; padding: 0.3125rem 0.875rem; border-radius: 999px; transition: background 0.15s ease; }
+.chm-seg button[aria-pressed='true'] { background: linear-gradient(135deg, ${mix('var(--chm-arc)', 38)}, ${mix('var(--chm-arc2)', 38)});
+  box-shadow: inset 0 0 0 1px var(--chm-arc), 0 0 14px var(--chm-glow); font-weight: 700; }
 .chm-seg button:focus-visible, .chm-chip:focus-visible, .chm-plain:focus-visible, .chm-row:focus-visible { outline: 2px solid var(--chm-ink); outline-offset: 2px; }
+
 .chm-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; }
 .chm-chip { display: inline-flex; align-items: center; gap: 0.3125rem; font-size: 0.75rem; padding: 0.1875rem 0.5625rem; border-radius: 999px;
-  border: 1px solid var(--chm-line); max-width: 100%; }
-.chm-chip[aria-pressed='true'] { border-color: var(--lane, var(--ui-accent)); background: ${mix('var(--lane, var(--ui-accent))', 18)}; }
+  border: 1px solid var(--chm-line); max-width: 100%; transition: box-shadow 0.15s ease, background 0.15s ease; }
+.chm-chip[aria-pressed='true'] { border-color: var(--lane, var(--chm-arc)); background: ${mix('var(--lane, var(--chm-arc))', 20)}; box-shadow: 0 0 10px ${mix('var(--lane, var(--chm-arc))', 30)}; }
 .chm-chip[data-off='1'] { opacity: 0.5; text-decoration: line-through; }
 .chm-notice { font-size: 0.8125rem; border: 1px solid var(--chm-line); border-left: 4px solid var(--ui-yellow); border-radius: 8px; padding: 0.5rem 0.75rem; margin: 0; }
 .chm-section { display: grid; gap: 0.5rem; min-width: 0; }
-.chm-loom { position: relative; border: 1px solid var(--chm-line); border-radius: 14px; overflow: hidden; user-select: none;
-  background: linear-gradient(180deg, var(--chm-veil), transparent 38%); }
-.chm-lane { position: absolute; left: 0; right: 0; border-top: 1px solid var(--chm-line); pointer-events: none; }
-.chm-lane-name { position: absolute; left: 0; top: 0; bottom: 0; width: ${LANE_W}px; box-sizing: border-box; display: flex; align-items: center; gap: 0.4375rem;
-  padding: 0 0.625rem; font-size: 0.75rem; font-weight: 600; border-right: 1px solid var(--chm-line);
-  background: linear-gradient(90deg, ${mix('var(--lane)', 14)}, transparent); }
+
+.chm-loom { position: relative; border: 1px solid ${mix('var(--chm-arc)', 40)}; border-radius: 16px; overflow: hidden; user-select: none;
+  background: linear-gradient(180deg, ${mix('var(--chm-arc2)', 9)}, transparent 46px), var(--chm-paper);
+  box-shadow: inset 0 0 0 1px ${mix('var(--chm-ink)', 4)}, 0 0 28px ${mix('var(--chm-arc2)', 10)}; }
+.chm-lane { position: absolute; left: 0; right: 0; border-top: 1px solid var(--chm-line); pointer-events: none;
+  background: linear-gradient(90deg, ${mix('var(--lane)', 9)}, transparent 55%); }
+.chm-lane-name { position: absolute; left: 0; top: 0; bottom: 0; width: ${LANE_W}px; box-sizing: border-box; display: flex; align-items: center; gap: 0.5rem;
+  padding: 0 0.75rem; font-size: 0.8125rem; font-weight: 650; border-right: 1px solid var(--chm-line);
+  background: linear-gradient(90deg, ${mix('var(--lane)', 26)}, ${mix('var(--lane)', 6)}); box-shadow: inset 3px 0 0 var(--lane); }
 .chm-lane-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.chm-sigil { flex: 0 0 auto; color: var(--lane, var(--ui-accent)); }
-.chm-tick { position: absolute; top: 24px; bottom: 0; width: 1px; background: var(--chm-line); opacity: 0.45; pointer-events: none; }
-.chm-tick[data-day='1'] { top: 0; opacity: 1; }
+.chm-sigil { flex: 0 0 auto; color: var(--lane, var(--chm-arc)); filter: drop-shadow(0 0 4px ${mix('var(--lane, var(--chm-arc))', 70)}); }
+.chm-tick { position: absolute; top: 24px; bottom: 0; width: 1px; background: var(--chm-line); opacity: 0.4; pointer-events: none; }
+.chm-tick[data-day='1'] { top: 0; opacity: 1; background: linear-gradient(180deg, var(--chm-arc), var(--chm-line) 46px); }
 .chm-tick-label { position: absolute; top: 26px; font-size: 0.6875rem; font-family: var(--chm-mono); padding-left: 4px; white-space: nowrap; pointer-events: none; }
-.chm-day-label { position: absolute; top: 5px; font-family: var(--chm-display); font-size: 0.6875rem; letter-spacing: 0.12em; text-transform: uppercase;
-  padding-left: 6px; white-space: nowrap; overflow: hidden; pointer-events: none; }
-.chm-day-label[data-today='1'] { color: var(--ui-accent); font-weight: 700; }
-.chm-night { position: absolute; bottom: 0; background-color: ${mix('var(--chm-ink)', 5)};
-  background-image: radial-gradient(circle at 20% 30%, ${mix('var(--chm-ink)', 45)} 0.6px, transparent 1.2px),
-    radial-gradient(circle at 70% 65%, ${mix('var(--chm-ink)', 32)} 0.5px, transparent 1.1px),
-    radial-gradient(circle at 45% 85%, ${mix('var(--ui-accent)', 55)} 0.6px, transparent 1.3px);
+.chm-day-label { position: absolute; top: 5px; font-family: var(--chm-display); font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase;
+  padding-left: 7px; white-space: nowrap; overflow: hidden; pointer-events: none; }
+.chm-day-label[data-today='1'] { color: var(--chm-arc); text-shadow: 0 0 10px var(--chm-glow); }
+.chm-night { position: absolute; bottom: 0; background-color: ${mix('var(--chm-arc2)', 9)};
+  background-image: radial-gradient(circle at 20% 30%, ${mix('var(--chm-ink)', 55)} 0.7px, transparent 1.3px),
+    radial-gradient(circle at 70% 65%, ${mix('var(--chm-ink)', 38)} 0.6px, transparent 1.2px),
+    radial-gradient(circle at 45% 85%, ${mix('var(--chm-arc3)', 75)} 0.7px, transparent 1.5px);
   background-size: 37px 29px, 53px 41px, 71px 47px; pointer-events: none; }
+.chm-moon { position: absolute; top: 27px; color: var(--chm-arc2); opacity: 0.9; pointer-events: none; filter: drop-shadow(0 0 5px ${mix('var(--chm-arc2)', 70)}); }
 .chm-past { position: absolute; bottom: 0; left: ${LANE_W}px; background: ${mix('var(--chm-ink)', 4)}; pointer-events: none; }
-.chm-now { position: absolute; top: 14px; bottom: 0; width: 2px; margin-left: -1px; background: var(--ui-accent);
-  box-shadow: 0 0 10px 1px var(--chm-glow); pointer-events: none; z-index: 4; animation: chm-pulse 2.6s ease-in-out infinite; }
-.chm-now-label { position: absolute; top: 0; transform: translateX(-50%); font-size: 0.625rem; font-family: var(--chm-mono); padding: 1px 6px;
-  border-radius: 999px; color: var(--chm-ink); border: 1px solid var(--ui-accent); background: var(--ui-bg-editor, var(--ui-bg-primary, transparent));
+.chm-now { position: absolute; top: 20px; bottom: 0; width: 2px; margin-left: -1px; pointer-events: none; z-index: 4;
+  background: linear-gradient(180deg, var(--chm-arc), ${mix('var(--chm-arc)', 35)}); box-shadow: 0 0 12px 1px var(--chm-glow); animation: chm-pulse 2.6s ease-in-out infinite; }
+.chm-now-star { position: absolute; top: 12px; width: 16px; height: 16px; margin-left: -8px; color: var(--chm-arc); z-index: 5; pointer-events: none;
+  filter: drop-shadow(0 0 6px var(--chm-glow)); animation: chm-breathe 2.6s ease-in-out infinite; }
+.chm-now-label { position: absolute; top: 25px; margin-left: 9px; font-size: 0.625rem; font-family: var(--chm-mono); padding: 1px 6px;
+  border-radius: 999px; color: var(--chm-ink); border: 1px solid var(--chm-arc); background: var(--chm-paper);
   white-space: nowrap; z-index: 5; pointer-events: none; }
+.chm-link { position: absolute; width: 0; border-left: 2px dashed var(--ui-red); opacity: 0.75; pointer-events: none; z-index: 2; }
+.chm-link[data-lit='1'] { opacity: 1; filter: drop-shadow(0 0 5px ${mix('var(--ui-red)', 80)}); }
+.chm-link > i { position: absolute; left: -10px; top: 50%; width: 18px; height: 18px; margin-top: -9px; border-radius: 50%; display: grid; place-items: center;
+  color: var(--ui-red); background: var(--chm-paper); border: 1px solid var(--ui-red); box-shadow: 0 0 9px ${mix('var(--ui-red)', 55)}; }
+
 .chm-bar { position: absolute; height: ${ROW_H}px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0; border: 0;
-  border-radius: 9px; background: transparent; color: var(--chm-ink); font: inherit; font-size: 0.75rem; line-height: 1; text-align: left;
-  white-space: nowrap; cursor: pointer; touch-action: none; transition: opacity 0.15s ease; animation: chm-rise 0.25s ease both; }
+  border-radius: 10px; background: transparent; color: var(--chm-ink); font: inherit; font-size: 0.75rem; line-height: 1; text-align: left;
+  white-space: nowrap; cursor: pointer; touch-action: none; transition: opacity 0.15s ease; animation: chm-rise 0.3s ease both; }
 .chm-bar[data-move='1'] { cursor: grab; }
 .chm-bar:focus-visible { outline: 2px solid var(--chm-ink); outline-offset: 2px; }
-.chm-body { position: relative; flex: 0 0 auto; height: 100%; box-sizing: border-box; border-radius: 9px; border: 1px solid var(--lane);
-  background: ${mix('var(--lane)', 15)}; display: flex; align-items: center; gap: 0.3125rem; padding: 0 0.4375rem; overflow: hidden;
+.chm-body { position: relative; flex: 0 0 auto; height: 100%; box-sizing: border-box; border-radius: 10px; border: 1px solid var(--lane);
+  background: linear-gradient(180deg, ${mix('var(--lane)', 34)}, ${mix('var(--lane)', 14)}); display: flex; align-items: center; gap: 0.3125rem;
+  padding: 0 0.4375rem; overflow: hidden; box-shadow: 0 0 10px ${mix('var(--lane)', 26)}, inset 0 1px 0 ${mix('var(--chm-ink)', 14)};
   transition: box-shadow 0.15s ease; }
 .chm-body[data-thin='1'] { padding: 0; justify-content: center; }
 .chm-body > * { position: relative; z-index: 1; flex: 0 0 auto; }
-.chm-body > .chm-bar-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chm-body > .chm-bar-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
 .chm-tag { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 0.25rem; }
 .chm-tag > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.chm-bar:hover > .chm-body { box-shadow: 0 0 0 1px var(--lane), 0 0 14px ${mix('var(--lane)', 45)}; }
+.chm-bar:hover > .chm-body { box-shadow: 0 0 0 1px var(--lane), 0 0 18px ${mix('var(--lane)', 60)}; }
 .chm-bar[data-phase='waiting'] > .chm-body { border-style: dashed; }
 .chm-bar[data-phase='due'] > .chm-body { animation: chm-pulse 1.4s ease-in-out infinite; }
-.chm-bar[data-phase='running'] > .chm-body { border-width: 2px; background-image: linear-gradient(100deg, ${mix('var(--lane)', 26)} 0%, ${mix('var(--lane)', 58)} 50%, ${mix('var(--lane)', 26)} 100%);
-  background-size: 220% 100%; animation: chm-sheen 3.4s linear infinite; }
-.chm-bar[data-phase='done'] { opacity: 0.6; }
-.chm-bar[data-phase='done'] > .chm-body { background: transparent; }
-.chm-bar[data-phase='missed'] > .chm-body, .chm-bar[data-phase='failed'] > .chm-body, .chm-bar[data-phase='gone'] > .chm-body { border: 1px dashed var(--ui-red); background: ${mix('var(--ui-red)', 8)}; }
-.chm-bar[data-clash='1'] > .chm-body { box-shadow: 0 0 0 1px var(--ui-red), 0 0 12px ${mix('var(--ui-red)', 50)}; }
-.chm-bar[data-partner='1'] > .chm-body { box-shadow: 0 0 0 2px var(--ui-red); }
-.chm-bar[data-sel='1'] { z-index: 3; font-weight: 600; }
-.chm-bar[data-sel='1'] > .chm-body { box-shadow: 0 0 0 2px var(--chm-ink), 0 0 18px var(--chm-glow); }
-.chm-bar[data-dim='1'] { opacity: 0.25; }
+.chm-bar[data-phase='running'] > .chm-body { border-width: 2px; background-image: linear-gradient(100deg, ${mix('var(--lane)', 30)} 0%, ${mix('var(--lane)', 72)} 50%, ${mix('var(--lane)', 30)} 100%);
+  background-size: 220% 100%; animation: chm-sheen 3s linear infinite; box-shadow: 0 0 16px ${mix('var(--lane)', 55)}; }
+.chm-bar[data-phase='done'] { opacity: 0.62; }
+.chm-bar[data-phase='done'] > .chm-body { background: transparent; box-shadow: none; }
+.chm-bar[data-phase='missed'] > .chm-body, .chm-bar[data-phase='failed'] > .chm-body, .chm-bar[data-phase='gone'] > .chm-body { border: 1px dashed var(--ui-red); background: ${mix('var(--ui-red)', 10)}; box-shadow: none; }
+.chm-bar[data-clash='1'] > .chm-body { box-shadow: 0 0 0 1px var(--ui-red), 0 0 14px ${mix('var(--ui-red)', 60)}; }
+.chm-bar[data-partner='1'] > .chm-body { box-shadow: 0 0 0 2px var(--ui-red), 0 0 16px ${mix('var(--ui-red)', 70)}; }
+.chm-bar[data-sel='1'] { z-index: 3; font-weight: 700; }
+.chm-bar[data-sel='1'] > .chm-body { box-shadow: 0 0 0 2px var(--chm-ink), 0 0 22px var(--chm-glow); }
+.chm-bar[data-dim='1'] { opacity: 0.22; }
 .chm-bar[data-drag='1'] { cursor: grabbing; z-index: 6; transition: none; }
-.chm-bar[data-drag='1'] > .chm-body { box-shadow: 0 6px 22px var(--chm-glow), 0 0 0 2px var(--ui-accent); }
+.chm-bar[data-drag='1'] > .chm-body { box-shadow: 0 8px 26px var(--chm-glow), 0 0 0 2px var(--chm-arc); }
 .chm-body > .chm-hatch { position: absolute; top: 0; bottom: 0; z-index: 0; pointer-events: none;
-  background: repeating-linear-gradient(135deg, ${mix('var(--ui-red)', 60)} 0 4px, transparent 4px 9px); }
+  background: repeating-linear-gradient(135deg, ${mix('var(--chm-ink)', 62)} 0 3px, transparent 3px 8px); }
 .chm-body > .chm-over { position: absolute; top: 0; bottom: 0; z-index: 0; pointer-events: none; border-left: 2px dotted var(--chm-ink);
-  background: repeating-linear-gradient(90deg, ${mix('var(--ui-yellow)', 50)} 0 3px, transparent 3px 7px); }
-.chm-bar > .chm-spark { position: absolute; top: 50%; width: 5px; height: 5px; margin: -2.5px; border-radius: 50%; background: var(--ui-accent);
+  background: repeating-linear-gradient(90deg, ${mix('var(--ui-yellow)', 60)} 0 3px, transparent 3px 7px); }
+.chm-bar > .chm-spark { position: absolute; top: 50%; width: 5px; height: 5px; margin: -2.5px; border-radius: 50%; background: var(--chm-arc);
   box-shadow: 0 0 8px 2px var(--chm-glow); pointer-events: none; animation: chm-spark 0.9s ease-out forwards; }
-.chm-guide { position: absolute; top: 14px; bottom: 0; width: 0; border-left: 2px dashed var(--ui-accent); pointer-events: none; z-index: 7; }
-.chm-guide-label { position: absolute; top: 0; left: 6px; font-size: 0.6875rem; font-family: var(--chm-mono); white-space: nowrap; padding: 2px 7px;
-  border-radius: 6px; border: 1px solid var(--ui-accent); background: var(--ui-bg-editor, var(--ui-bg-primary, transparent)); color: var(--chm-ink); }
+.chm-bar > .chm-ring { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px; border-radius: 50%; border: 2px solid var(--chm-arc);
+  pointer-events: none; animation: chm-ring 0.8s ease-out forwards; }
+.chm-guide { position: absolute; top: 20px; bottom: 0; width: 0; border-left: 2px dashed var(--chm-arc); pointer-events: none; z-index: 7; filter: drop-shadow(0 0 5px var(--chm-glow)); }
+.chm-guide-label { position: absolute; top: 4px; left: 8px; font-size: 0.6875rem; font-family: var(--chm-mono); white-space: nowrap; padding: 2px 8px;
+  border-radius: 999px; border: 1px solid var(--chm-arc); background: var(--chm-paper); color: var(--chm-ink); box-shadow: 0 0 12px var(--chm-glow); }
 .chm-empty { position: absolute; left: ${LANE_W}px; right: 0; margin: 0; text-align: center; font-size: 0.8125rem; pointer-events: none; }
-.chm-two { display: grid; gap: 1.125rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); align-items: start; }
-.chm-card { border: 1px solid var(--chm-line); border-radius: 12px; padding: 0.875rem; display: grid; gap: 0.625rem; min-width: 0; }
-.chm-card[data-lit='1'] { border-color: var(--lane, var(--ui-accent)); box-shadow: 0 0 0 1px var(--lane, var(--ui-accent)), 0 0 22px ${mix('var(--lane, var(--ui-accent))', 22)}; }
-.chm-name { font-size: 1rem; font-weight: 650; margin: 0; overflow-wrap: anywhere; }
+
+.chm-two { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); align-items: start; }
+.chm-card { position: relative; border: 1px solid ${mix('var(--lane, var(--chm-arc))', 60)}; border-radius: 14px; padding: 1rem; display: grid; gap: 0.625rem; min-width: 0;
+  background: radial-gradient(120% 90% at 0% 0%, ${mix('var(--lane, var(--chm-arc))', 13)}, transparent 60%);
+  box-shadow: 0 0 26px ${mix('var(--lane, var(--chm-arc))', 16)}; animation: chm-rise 0.25s ease both; }
+.chm-card::before, .chm-card::after { content: ''; position: absolute; width: 11px; height: 11px; border: 2px solid var(--lane, var(--chm-arc)); pointer-events: none; }
+.chm-card::before { top: 4px; left: 4px; border-right: 0; border-bottom: 0; border-radius: 8px 0 0 0; }
+.chm-card::after { bottom: 4px; right: 4px; border-left: 0; border-top: 0; border-radius: 0 0 8px 0; }
+.chm-name { font-size: 1.0625rem; font-weight: 650; margin: 0; overflow-wrap: anywhere; }
 .chm-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; min-width: 0; }
 .chm-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem; margin: 0; }
 .chm-field { display: grid; gap: 0.1875rem; font-size: 0.6875rem; }
-.chm-input { font: inherit; font-size: 0.8125rem; color: var(--chm-ink); background: var(--ui-bg-input, transparent); border: 1px solid var(--chm-soft);
-  border-radius: 7px; padding: 0.3125rem 0.5rem; min-width: 0; color-scheme: light dark; }
+.chm-input { font: inherit; font-size: 0.8125rem; color: var(--chm-ink); background: ${mix('var(--chm-ink)', 7)}; border: 1px solid var(--chm-soft);
+  border-radius: 8px; padding: 0.3125rem 0.5rem; min-width: 0; width: 100%; box-sizing: border-box; }
 .chm-input:focus-visible { outline: 2px solid var(--chm-ink); outline-offset: 1px; }
-.chm-clash { border-left: 3px solid var(--ui-red); padding: 0.125rem 0 0.125rem 0.5rem; font-size: 0.8125rem; }
-.chm-clash[data-kind='busy'] { border-left-color: var(--ui-yellow); border-left-style: dashed; }
-.chm-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; }
-.chm-row { display: flex; align-items: center; gap: 0.5rem; width: 100%; box-sizing: border-box; min-width: 0; padding: 0.375rem 0.5rem; border-radius: 9px; border: 1px solid var(--chm-line);
-  background: transparent; color: var(--chm-ink); font: inherit; font-size: 0.8125rem; text-align: left; cursor: pointer; touch-action: none; }
-.chm-row:hover, .chm-row[data-sel='1'] { border-color: var(--lane, var(--ui-accent)); background: ${mix('var(--lane, var(--ui-accent))', 10)}; }
+.chm-clash { border-left: 3px solid var(--ui-red); padding: 0.1875rem 0 0.1875rem 0.5625rem; font-size: 0.8125rem; background: linear-gradient(90deg, ${mix('var(--ui-red)', 10)}, transparent 70%); border-radius: 0 6px 6px 0; }
+.chm-clash[data-kind='busy'] { border-left-color: var(--ui-yellow); border-left-style: dashed; background: none; }
+.chm-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.3125rem; }
+.chm-row { display: flex; align-items: center; gap: 0.5rem; width: 100%; box-sizing: border-box; min-width: 0; padding: 0.4375rem 0.625rem; border-radius: 10px; border: 1px solid var(--chm-line);
+  background: linear-gradient(90deg, ${mix('var(--lane, var(--chm-arc))', 8)}, transparent 60%); color: var(--chm-ink); font: inherit; font-size: 0.8125rem; text-align: left; cursor: pointer;
+  touch-action: none; transition: box-shadow 0.15s ease, border-color 0.15s ease; }
+.chm-row:hover, .chm-row[data-sel='1'] { border-color: var(--lane, var(--chm-arc)); box-shadow: 0 0 14px ${mix('var(--lane, var(--chm-arc))', 30)}; }
 .chm-row[data-dim='1'] { opacity: 0.3; }
 .chm-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chm-entry { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.75rem; padding: 0.1875rem 0; min-width: 0; }
-.chm-entry time { flex: 0 0 auto; font-family: var(--chm-mono); white-space: nowrap; }
+.chm-entry time { flex: 0 0 auto; font-family: var(--chm-mono); white-space: nowrap; opacity: 0.86; }
 .chm-entry span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .chm-entry[data-owner='1'] span { font-weight: 600; }
 .chm-agenda { display: grid; gap: 0.375rem; }
-.chm-agenda h3 { font-family: var(--chm-display); font-size: 0.6875rem; letter-spacing: 0.12em; text-transform: uppercase; margin: 0.375rem 0 0; }
+.chm-agenda h3 { font-family: var(--chm-display); font-size: 0.6875rem; letter-spacing: 0.16em; text-transform: uppercase; margin: 0.375rem 0 0; color: var(--chm-arc); }
 .chm-id { font-family: var(--chm-mono); font-size: 0.6875rem; user-select: all; }
 @keyframes chm-spin { to { transform: rotate(360deg); } }
 @keyframes chm-pulse { 0%, 100% { opacity: 0.62; } 50% { opacity: 1; } }
+@keyframes chm-breathe { 0%, 100% { transform: scale(0.86); opacity: 0.8; } 50% { transform: scale(1.12); opacity: 1; } }
+@keyframes chm-twinkle { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 @keyframes chm-sheen { from { background-position: 110% 0; } to { background-position: -110% 0; } }
-@keyframes chm-rise { from { opacity: 0; transform: translateY(3px); } }
+@keyframes chm-rise { from { opacity: 0; transform: translateY(4px); } }
 @keyframes chm-spark { to { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; } }
+@keyframes chm-ring { to { transform: scale(9); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .chm *, .chm *::before, .chm *::after { animation: none !important; transition: none !important; } }
 `
 
@@ -477,6 +518,9 @@ const el = (type, props, ...children) =>
   children.length > 1 ? jsxs(type, { ...props, children }) : jsx(type, { ...props, children: children[0] })
 
 const icon = (name, size = 12) => jsx(Codicon, { name, size })
+
+// The app's own text field when this build of the SDK exports it, else a plain input in theme colours.
+const field = props => (SDK.Input ? jsx(SDK.Input, props) : jsx('input', { ...props, className: 'chm-input' }))
 
 const PHASE_ICON = {
   planned: 'clock',
@@ -507,34 +551,96 @@ function star(points, outer, inner, turn) {
   return `${path.join(' ')} Z`
 }
 
-/** The page's clock: a small astrolabe whose hands show the plugin's time. */
-function Astrolabe({ data, size = 58 }) {
+/** The page's clock: an astrolabe whose hands show the plugin's time. Its rings turn slowly. */
+function Astrolabe({ data, size = 92 }) {
   const local = new Date((nowOf(data) + (Number(data.utc_offset_s) || 0)) * 1000)
   const minutes = local.getUTCMinutes()
   const hours = (local.getUTCHours() % 12) + minutes / 60
-  const line = { stroke: 'currentColor', strokeLinecap: 'round', fill: 'none' }
+  const line = { strokeLinecap: 'round', fill: 'none' }
   const marks = []
 
+  for (let i = 0; i < 24; i += 1) {
+    marks.push(jsx('line', { ...line, className: 'a1', x1: 0, y1: -47, x2: 0, y2: i % 6 ? (i % 2 ? -45 : -43.5) : -41.5, strokeWidth: i % 6 ? 0.7 : 1.6, transform: `rotate(${i * 15})` }, i))
+  }
+
+  const runes = []
+
   for (let i = 0; i < 12; i += 1) {
-    marks.push(jsx('line', { ...line, x1: 0, y1: -27, x2: 0, y2: i % 3 ? -24.5 : -22.5, strokeWidth: i % 3 ? 0.8 : 1.4, transform: `rotate(${i * 30})` }, i))
+    runes.push(jsx('path', { ...line, className: 'ink', d: RUNES[i % RUNES.length], strokeWidth: 0.8, opacity: 0.7, transform: `rotate(${i * 30}) translate(0 -37)` }, i))
   }
 
   return el(
     'svg',
-    { className: 'chm-astro', width: size, height: size, viewBox: '-30 -30 60 60', 'aria-hidden': true },
-    jsx('circle', { ...line, r: 28.5, strokeWidth: 1 }),
+    { className: 'chm-astro', width: size, height: size, viewBox: '-50 -50 100 100', 'aria-hidden': true },
+    jsx('circle', { ...line, className: 'a1', r: 48.5, strokeWidth: 1.1 }),
+    jsx('circle', { ...line, className: 'a1', r: 41, strokeWidth: 0.5, opacity: 0.6 }),
     jsx('g', { children: marks }),
+    jsx('g', { children: runes }),
     el(
       'g',
       { className: 'chm-spin' },
-      jsx('circle', { ...line, r: 18.5, strokeWidth: 0.7, strokeDasharray: '1.5 3.2' }),
-      jsx('path', { ...line, d: star(7, 18.5, 8.5, 0), strokeWidth: 0.6, opacity: 0.75 })
+      jsx('circle', { ...line, className: 'a2', r: 31.5, strokeWidth: 0.7, strokeDasharray: '1.2 3.4' }),
+      jsx('path', { ...line, className: 'a2', d: star(7, 31.5, 14.5, 0), strokeWidth: 0.7, opacity: 0.85 })
     ),
-    jsx('line', { ...line, x1: 0, y1: 2.5, x2: 0, y2: -12, strokeWidth: 2, transform: `rotate(${hours * 30})` }),
-    jsx('line', { ...line, x1: 0, y1: 3, x2: 0, y2: -20, strokeWidth: 1.2, transform: `rotate(${minutes * 6})` }),
-    jsx('path', { d: star(4, 4.2, 1.6, 0), fill: 'currentColor' })
+    el(
+      'g',
+      { className: 'chm-spin-back' },
+      jsx('path', { ...line, className: 'a3', d: star(3, 23, 11.5, 0), strokeWidth: 0.6, opacity: 0.8 }),
+      jsx('path', { ...line, className: 'a3', d: star(3, 23, 11.5, Math.PI), strokeWidth: 0.6, opacity: 0.8 }),
+      jsx('circle', { ...line, className: 'a3', r: 23, strokeWidth: 0.5 })
+    ),
+    jsx('g', { className: 'chm-orbit', style: { animationDelay: `-${local.getUTCSeconds()}s` }, children: jsx('circle', { className: 'f3', cx: 0, cy: -48.5, r: 2.1 }) }),
+    jsx('path', { ...line, className: 'ink', d: 'M0 4 L0 -17 M-2.2 -14 L0 -19.5 L2.2 -14', strokeWidth: 2, transform: `rotate(${hours * 30})` }),
+    jsx('path', { ...line, className: 'ink', d: 'M0 5 L0 -29 M-1.6 -26.5 L0 -31 L1.6 -26.5', strokeWidth: 1.2, transform: `rotate(${minutes * 6})` }),
+    jsx('path', { className: 'f1 chm-core', d: star(8, 5.6, 2.2, 0) })
   )
 }
+
+// Small marks around the astrolabe's rim: strokes only, no letters of any real alphabet.
+const RUNES = ['M-2 2 L0 -2 L2 2', 'M0 -2.4 L0 2.4 M-1.8 0 L1.8 0', 'M-2 -2 L2 2 M-2 2 L0 0', 'M-1.8 -2 L-1.8 2 L1.8 0 Z', 'M-2 0 L0 -2.2 L2 0 L0 2.2 Z', 'M-2 -1.6 L2 -1.6 M0 -1.6 L0 2.4']
+
+/** A field of stars with a few small constellations, behind the header. Always the same sky. */
+function Sky() {
+  const stars = []
+  const lines = []
+  let seed = 20261111
+  const next = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+
+    return seed / 4294967296
+  }
+  const dot = (x, y, r, opacity, i) =>
+    jsx('circle', { cx: x.toFixed(1), cy: y.toFixed(1), r: r.toFixed(2), fill: 'currentColor', opacity: opacity.toFixed(2),
+      className: i % 3 === 0 ? 'chm-twinkle' : undefined, style: i % 3 === 0 ? { animationDelay: `${(i % 7) * 0.5}s` } : undefined }, `s${i}`)
+
+  for (let i = 0; i < 46; i += 1) {
+    stars.push(dot(next() * 1000, next() * 170, 0.4 + next() * 0.9, 0.2 + next() * 0.4, i))
+  }
+
+  // each constellation: five stars close together, joined in the order they were placed
+  for (let c = 0; c < 6; c += 1) {
+    let x = 90 + c * 160 + next() * 60
+    let y = 30 + next() * 100
+    const points = []
+
+    for (let i = 0; i < 5; i += 1) {
+      points.push([x, y])
+      stars.push(dot(x, y, 1.1 + next() * 0.6, 0.5, 100 + c * 5 + i))
+      x += 16 + next() * 26
+      y += (next() - 0.5) * 46
+    }
+
+    lines.push(jsx('polyline', { className: 'chm-line', points: points.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(' '), fill: 'none', strokeWidth: 0.6, opacity: 0.26 }, c))
+  }
+
+  return el('svg', { className: 'chm-sky', viewBox: '0 0 1000 170', preserveAspectRatio: 'xMidYMid slice', 'aria-hidden': true }, jsx('g', { children: lines }), jsx('g', { children: stars }))
+}
+
+const Moon = ({ left }) =>
+  jsx('svg', { className: 'chm-moon', style: { left }, width: 11, height: 11, viewBox: '0 0 12 12', 'aria-hidden': true, children: jsx('path', { d: 'M7 0.6 A5.4 5.4 0 1 0 11.4 5 A4.3 4.3 0 1 1 7 0.6 Z', fill: 'currentColor' }) })
+
+const NowStar = ({ left }) =>
+  jsx('svg', { className: 'chm-now-star', style: { left }, viewBox: '-10 -10 20 20', 'aria-hidden': true, children: jsx('path', { d: star(4, 9, 2.6, 0), fill: 'currentColor' }) })
 
 /** One profile's mark: a star whose points and turn come from the profile's name. */
 function Sigil({ name, size = 16 }) {
@@ -559,6 +665,7 @@ function Header({ data, horizon, setHorizon, t }) {
   return el(
     'header',
     { className: 'chm-head' },
+    jsx(Sky, {}),
     jsx(Astrolabe, { data }),
     el(
       'div',
@@ -680,6 +787,8 @@ function Sparks({ seed, at }) {
     )
   }
 
+  sparks.push(jsx('i', { className: 'chm-ring', style: { left: at } }, 'ring'))
+
   return sparks
 }
 
@@ -755,9 +864,17 @@ function Loom({ data, view, t }) {
   const parts = []
 
   // the sky: nights, the past, day and hour lines
-  for (const night of data.horizon.nights) {
-    parts.push(jsx('div', { className: 'chm-night', style: { left: LANE_W + layout.x(night.start), width: layout.x(night.end) - layout.x(night.start), top: HEAD_H } }, `n:${night.start}`))
-  }
+  data.horizon.nights.forEach((night, index) => {
+    const left = LANE_W + layout.x(night.start)
+    const width = layout.x(night.end) - layout.x(night.start)
+
+    parts.push(jsx('div', { className: 'chm-night', style: { left, width, top: HEAD_H } }, `n:${night.start}`))
+
+    // one moon per night: on the half before midnight, or on a night that starts the horizon
+    if (width > 26 && (index % 2 === 0 || index === 0)) {
+      parts.push(jsx(Moon, { left: left + width - 15 }, `m:${night.start}`))
+    }
+  })
 
   if (now > layout.start) {
     parts.push(jsx('div', { className: 'chm-past', style: { width: Math.min(layout.plot, layout.x(now)), top: HEAD_H } }, 'past'))
@@ -776,13 +893,14 @@ function Loom({ data, view, t }) {
 
   const gap = layout.plot / Math.max(1, data.horizon.ticks.length)
   const every = Math.max(1, Math.ceil(44 / Math.max(1, gap)))
+  const needle = within(now) ? LANE_W + layout.x(now) : -999
 
   data.horizon.ticks.forEach((tick, index) => {
     const left = LANE_W + layout.x(tick.ts)
 
     parts.push(jsx('div', { className: 'chm-tick', 'data-day': tick.day ? '1' : '0', style: { left } }, `t:${tick.ts}`))
 
-    if (!tick.day && index % every === 0 && left < LANE_W + layout.plot - 30) {
+    if (!tick.day && index % every === 0 && left < LANE_W + layout.plot - 30 && (left < needle - 40 || left > needle + 78)) {
       parts.push(jsx('div', { className: 'chm-tick-label', style: { left }, children: tick.label }, `tl:${tick.ts}`))
     }
   })
@@ -806,11 +924,42 @@ function Loom({ data, view, t }) {
     parts.push(jsx('p', { className: 'chm-empty', style: { top: HEAD_H + 20 }, children: t('loom.empty') }, 'empty'))
   }
 
+  // a link between two bars that clash, at the start of their shared time
+  const at = {}
+
+  for (const lane of layout.lanes) {
+    for (const bar of lane.bars) {
+      at[bar.item.task_id] = bar.shift ? null : lane.top + LANE_PAD + bar.row * (ROW_H + ROW_GAP)
+    }
+  }
+
+  for (const item of data.items) {
+    for (const clash of item.clashes) {
+      const a = at[item.task_id]
+      const b = at[clash.with]
+
+      if (clash.kind === 'clash' && item.task_id < clash.with && a !== null && a !== undefined && b !== null && b !== undefined && a !== b && within(clash.start)) {
+        const top = Math.min(a, b) + ROW_H
+        const lit = view.selected === item.task_id || view.selected === clash.with
+
+        parts.push(
+          jsx('div', {
+            className: 'chm-link',
+            'data-lit': lit ? '1' : '0',
+            style: { left: LANE_W + layout.x(clash.start) + 3, top, height: Math.max(a, b) - top },
+            children: Math.max(a, b) - top >= 18 ? jsx('i', { children: icon('zap', 11) }) : null
+          }, `k:${item.task_id}:${clash.with}`)
+        )
+      }
+    }
+  }
+
   // the needle, and the guide while something is dragged
   if (within(now)) {
     const left = LANE_W + layout.x(now)
 
     parts.push(jsx('div', { className: 'chm-now', style: { left } }, 'now'))
+    parts.push(jsx(NowStar, { left }, 'now-star'))
     parts.push(jsx('div', { className: 'chm-now-label', style: { left }, children: t('now', clock(now).split(' ')[1]) }, 'now-label'))
   }
 
@@ -968,9 +1117,9 @@ function Scroll({ item, data, color, view, t }) {
       ? el(
           'form',
           { className: 'chm-form', onSubmit: save },
-          el('label', { className: 'chm-field' }, t('scroll.start'), jsx('input', { className: 'chm-input', type: 'datetime-local', value: start, required: true, onChange: event => setStart(event.target.value) })),
-          el('label', { className: 'chm-field' }, t('scroll.estimate'), jsx('input', { className: 'chm-input', type: 'number', min: 1, max: 20160, style: { width: '6.5rem' }, value: minutes, onChange: event => setMinutes(event.target.value) })),
-          jsx(Button, { size: 'sm', type: 'submit', children: t(planned ? 'action.save' : 'action.plan') })
+          el('label', { className: 'chm-field' }, t('scroll.start'), field({ type: 'datetime-local', value: start, required: true, style: { width: '13.5rem' }, onChange: event => setStart(event.target.value) })),
+          el('label', { className: 'chm-field' }, t('scroll.estimate'), field({ type: 'number', min: 1, max: 20160, style: { width: '6.5rem' }, value: minutes, onChange: event => setMinutes(event.target.value) })),
+          jsx(Button, { size: 'sm', variant: 'outline', type: 'submit', children: t(planned ? 'action.save' : 'action.plan') })
         )
       : null,
     el(
@@ -1003,7 +1152,7 @@ function Scroll({ item, data, color, view, t }) {
     el(
       'form',
       { className: 'chm-form', onSubmit: addLabel },
-      jsx('input', { className: 'chm-input', style: { flex: '1 1 10rem' }, value: label, list: 'chm-labels', placeholder: t('scroll.addLabel'), 'aria-label': t('scroll.addLabel'), onChange: event => setLabel(event.target.value) }),
+      jsx('div', { style: { flex: '1 1 10rem', minWidth: 0 }, children: field({ value: label, list: 'chm-labels', placeholder: t('scroll.addLabel'), 'aria-label': t('scroll.addLabel'), onChange: event => setLabel(event.target.value) }) }),
       jsx('datalist', { id: 'chm-labels', children: data.labels.filter(l => !l.derived && !known.has(l.name)).map(l => jsx('option', { value: l.name }, l.name)) }),
       jsx(Button, { size: 'sm', variant: 'outline', type: 'submit', children: t('action.add') })
     ),
@@ -1025,7 +1174,7 @@ function Tray({ data, view, t }) {
   return el(
     'section',
     { className: 'chm-section' },
-    el('h2', {}, icon('inbox', 14), t('tray.title'), jsx(Badge, { variant: 'muted', children: String(rows.length) })),
+    el('h2', {}, t('tray.title'), jsx(Badge, { variant: 'muted', children: String(rows.length) })),
     rows.length
       ? jsx('ul', {
           className: 'chm-list',
@@ -1057,15 +1206,19 @@ function Tray({ data, view, t }) {
 
 const ACTOR_ICON = { owner: 'account', timer: 'watch' }
 
-function Chronicle({ data, t }) {
+function Chronicle({ data, all, setAll, t }) {
+  const moves = data.log.filter(entry => !entry.quiet)
+  const shown = all ? data.log : moves.slice(0, CHRONICLE)
+  const more = data.log.length - shown.length
+
   return el(
     'section',
     { className: 'chm-section' },
-    el('h2', {}, icon('history', 14), t('chronicle.title')),
-    data.log.length
+    jsx('h2', { children: t('chronicle.title') }),
+    shown.length
       ? jsx('div', {
           role: 'log',
-          children: data.log.map(entry =>
+          children: shown.map(entry =>
             el(
               'div',
               { className: 'chm-entry', 'data-owner': entry.by_owner ? '1' : '0', key: entry.id },
@@ -1075,7 +1228,19 @@ function Chronicle({ data, t }) {
             )
           )
         })
-      : jsx('p', { className: 'chm-p', children: t('chronicle.empty') })
+      : jsx('p', { className: 'chm-p', children: t('chronicle.empty') }),
+    more > 0 || all
+      ? jsx('div', {
+          children: jsx('button', {
+            type: 'button',
+            className: 'chm-plain',
+            style: { fontSize: '0.75rem', textDecoration: 'underline' },
+            'aria-expanded': all,
+            onClick: () => setAll(!all),
+            children: all ? t('chronicle.fewer') : t('chronicle.all', data.log.length)
+          })
+        })
+      : null
   )
 }
 
@@ -1095,6 +1260,7 @@ function ChronomancerPage() {
   const [moved, setMoved] = useState(null) // { id, start }: where a bar sits until the backend confirms the move
   const [pending, setPending] = useState(null) // the card whose "cast now" dialog is open
   const [burst, setBurst] = useState(null) // { id, seed }: sparks on a bar after a move
+  const [allLog, setAllLog] = useState(false) // the chronicle with label housekeeping
   const frame = useRef(null)
   const live = useRef({})
   const query = usePlan(horizon)
@@ -1250,7 +1416,7 @@ function ChronomancerPage() {
   } else {
     const ladder = Boolean(viewport && viewport.narrow) || (width > 0 && width < 620)
     const chosen = [...data.items, ...data.tray].find(item => item.task_id === selected) || null
-    const allLanes = data.lanes.map((lane, index) => ({ ...lane, color: laneColor(lane.profile, index) }))
+    const allLanes = data.lanes.map((lane, index) => ({ ...lane, color: laneColor(index) }))
     const colorOf = profile => (allLanes.find(lane => lane.profile === profile) || {}).color
     const view = { layout, now, clock, selected, drag, burst, filters, frame, grab, nudge, run, commit, select: setSelected, ask: setPending }
 
@@ -1262,7 +1428,7 @@ function ChronomancerPage() {
       el(
         'section',
         { className: 'chm-section', key: 'loom' },
-        el('h2', {}, icon('wand', 14), t('loom.title')),
+        jsx('h2', { children: t('loom.title') }),
         ladder ? jsx('div', { ref: frame, children: jsx(Agenda, { data, view, t }) }) : jsx(Loom, { data, view, t }),
         data.later.text ? jsx('p', { className: 'chm-quiet', children: data.later.text }) : null,
         ladder ? null : jsx('p', { className: 'chm-quiet', children: t('loom.hint') })
@@ -1273,12 +1439,12 @@ function ChronomancerPage() {
         el(
           'section',
           { className: 'chm-section' },
-          el('h2', {}, icon('book', 14), t('scroll.title')),
+          jsx('h2', { children: t('scroll.title') }),
           chosen ? jsx(Scroll, { item: chosen, data, color: colorOf(chosen.assignee), view, t }, chosen.task_id) : jsx('p', { className: 'chm-p', children: t('scroll.none') })
         ),
         jsx(Tray, { data, view, t })
       ),
-      jsx(Chronicle, { data, t }, 'chronicle')
+      jsx(Chronicle, { data, all: allLog, setAll: setAllLog, t }, 'chronicle')
     ]
   }
 

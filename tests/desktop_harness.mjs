@@ -21,7 +21,6 @@ export const host = G.host
 export const queryClient = G.queryClient
 export const usePluginI18n = () => G.t
 export const useQuery = options => { G.queryOptions.push(options); return G.query }
-export const profileColor = name => (name && name !== 'default' ? 'app-color(' + name + ')' : null)
 `
 const REACT = `
 const G = globalThis.__chm
@@ -163,11 +162,18 @@ try {
     days: withClass(tree, 'chm-day-label').map(label),
     tray: withClass(tree, 'chm-row').map(n => ({ title: label(withClass(n, 'chm-row-title')[0]), status: label(nodes(n, 'Badge')[0]) })),
     chronicle: withClass(tree, 'chm-entry').map(n => ({ text: label(nodes(n, 'span')[0]), owner: n.props['data-owner'], icon: nodes(n, 'Codicon')[0].props.name })),
+    chronicleMore: withClass(tree, 'chm-plain').map(label).filter(x => x.startsWith('Show')),
     later: withClass(tree, 'chm-quiet').map(label),
     chips: withClass(tree, 'chm-chip').map(n => ({ text: label(n), pressed: n.props['aria-pressed'] })),
     scroll: withClass(tree, 'chm-card').length,
     loomHeight: withClass(tree, 'chm-loom')[0].props.style.height
   }
+
+  // the chronicle opens to every change, label housekeeping included
+  withClass(tree, 'chm-plain').find(n => label(n).startsWith('Show all')).props.onClick()
+  out.chronicleAll = { entries: withClass(page(), 'chm-entry').length, toggle: withClass(page(), 'chm-plain').map(label).filter(x => x.startsWith('Show')) }
+  withClass(page(), 'chm-plain').find(n => label(n) === 'Show fewer').props.onClick()
+  tree = page()
 
   // select a clashing slot: the scroll shows it; its partner is marked
   const clashing = VIEW.items.find(i => i.clash && i.phase === 'planned' && i.next_free_text)
