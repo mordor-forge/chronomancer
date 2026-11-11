@@ -111,7 +111,7 @@ A tool never raises. A refusal is `{"ok": false, "error": "<a sentence>"}`.
   focus it and press the left or right arrow key.
 - **Unplanned**: the open cards without a slot. Drag one onto the timeline. A long list scrolls in
   place, and a field narrows it by title, card id, status, profile or label.
-- **Selected card**: its state in one sentence, its clashes, the next free start, Cast now (asks
+- **Selected card**: its state in one sentence, its clashes, the next free start, Run now (asks
   first), Move, Pin, Unplan, and its labels.
 - **Changes**: the newest moves; label changes on request.
 - A status-bar chip, a palette command, and a badge with the slot on the cards of the Kanban board.

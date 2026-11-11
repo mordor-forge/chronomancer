@@ -21,7 +21,10 @@ export const useValue = a => a.get()
 export const host = G.host
 export const queryClient = G.queryClient
 export const usePluginI18n = () => G.t
-export const useQuery = options => { G.queryOptions.push(options); return G.query }
+export const useQuery = options => {
+  if (options.queryKey[1] === 'profiles') { G.rosterOptions = options; return { data: options.enabled ? (G.roster || []) : undefined } }
+  G.queryOptions.push(options); return G.query
+}
 `
 const REACT = `
 const G = globalThis.__chm
@@ -83,6 +86,7 @@ try {
       return G.slots[i]
     },
     host: { state: { viewport: { get: () => G.viewport } }, navigations: [], notices: [], events: {},
+            profiles: { list: async () => ({ profiles: [...(G.roster || []).map(name => ({ name })), 'plain-name', { id: 'by-id' }, {}, null] }) },
             navigate: path => G.host.navigations.push(path), notify: n => G.host.notices.push(n),
             onEvent: (type, fn) => { G.host.events[type] = fn; return () => {} } },
     viewport: { width: 1400, height: 900, narrow: false },
@@ -208,7 +212,15 @@ try {
   press(page(), 'Unplan')
   await settle()
   const forms = nodes(withClass(page(), 'chm-card')[0], 'form')
+  // Move is off until the start or the estimate differs from the slot
+  const moveOff = () => nodes(nodes(withClass(page(), 'chm-card')[0], 'form')[0], 'Button')[0].props.disabled
+  out.moveButton = { same: moveOff() }
+  nodes(forms[0], 'input')[1].props.onChange({ target: { value: '46' } })
+  out.moveButton.estimate = moveOff()
+  nodes(nodes(withClass(page(), 'chm-card')[0], 'form')[0], 'input')[1].props.onChange({ target: { value: '45' } })
+  out.moveButton.back = moveOff()
   nodes(forms[0], 'input')[0].props.onChange({ target: { value: '2030-01-02T09:30' } })
+  out.moveButton.start = moveOff()
   nodes(forms[0], 'input')[1].props.onChange({ target: { value: '75' } })
   nodes(withClass(page(), 'chm-card')[0], 'form')[0].props.onSubmit({ preventDefault: () => {} })
   await settle()
@@ -221,12 +233,12 @@ try {
 
   // cast now: a dialog first
   restCalls.length = 0
-  press(page(), 'Cast now')
+  press(page(), 'Run now')
   const dialog = () => nodes(page(), 'ConfirmDialog')[0]
   out.dialog = { title: dialog().props.title, description: dialog().props.description, confirmLabel: dialog().props.confirmLabel, open: dialog().props.open }
   dialog().props.onClose()
   out.dialogClosed = nodes(page(), 'ConfirmDialog').length === 0
-  press(page(), 'Cast now')
+  press(page(), 'Run now')
   await dialog().props.onConfirm()
   out.cast = restCalls.filter(c => !c.path.startsWith('/plan'))
 
@@ -351,6 +363,14 @@ try {
   type('')
   out.longTrayCleared = trayState().rows
   setQuery(DATA)
+
+  // lanes: the one whose agent works a card says so; a profile the app lists gets a lane without a card
+  G.slots = []
+  out.busyLanes = withClass(page(), 'chm-lane-name').filter(n => n.props['data-busy'] === '1').map(n => [label(n), n.props.title])
+  out.rosterOff = { enabled: G.rosterOptions.enabled, names: await G.rosterOptions.queryFn() }
+  G.roster = ['builder', 'herald']
+  out.roster = { lanes: withClass(page(), 'chm-lane-name').map(label), chip: withClass(page(), 'chm-chip').map(label).includes('herald') }
+  G.roster = []
 
   // narrow: a list, no loom
   G.slots = []

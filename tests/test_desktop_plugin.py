@@ -146,7 +146,7 @@ def test_a_selected_slot_opens_its_scroll_with_the_backend_sentences(run):
     assert chosen["clashes"] == [{"kind": c["kind"], "text": c["text"]} for c in item["clashes"]]
     for text in (item["line"], item["set_by_text"], f"{item['when']} · {item['estimate']}"):
         assert text in chosen["texts"]
-    assert chosen["buttons"] == ["Next free start: Wed 11 Nov 10:45", "Move", "Cast now", "15 min earlier", "15 min later", "Pin", "Unplan", "Add"]
+    assert chosen["buttons"] == ["Next free start: Wed 11 Nov 10:45", "Move", "Run now", "15 min earlier", "15 min later", "Pin", "Unplan", "Add"]
     assert chosen["inputs"] == [["datetime-local", "2026-11-11T10:15"], ["number", "45"], ["text", ""]]   # plain inputs: this SDK has no Input
     assert chosen["partners"] == ["Upgrade the ingress controller to 1.12"] and chosen["pressed"] == 1
 
@@ -171,7 +171,7 @@ def test_each_move_is_one_request_and_the_backend_words_are_shown(run):
 
 def test_cast_now_asks_first(run):
     out, _view, ids = run
-    assert out["dialog"] == {"title": "Cast now?", "confirmLabel": "Cast now", "open": True,
+    assert out["dialog"] == {"title": "Run this card now?", "confirmLabel": "Run now", "open": True,
                              "description": '"Rotate the database credentials" is released at once and its slot moves to now.'}
     assert out["dialogClosed"] is True
     assert out["cast"] == [{"path": f"/cards/{ids['rotate']}/now", "method": "POST", "body": None}]
@@ -207,7 +207,7 @@ def test_dragging_a_tray_card_onto_the_loom_plans_it(run):
     drop = out["drop"]
     assert drop["id"] == ids["autoscaler"]
     assert drop["calls"] == [{"path": f"/cards/{drop['id']}/slot", "method": "POST", "body": {"start": drop["near"]}}]
-    assert out["trayScroll"] == {"buttons": ["Plan", "Cast now", "Add"], "inputs": ["2026-11-11T11:00", "60", ""]}
+    assert out["trayScroll"] == {"buttons": ["Plan", "Run now", "Add"], "inputs": ["2026-11-11T11:00", "60", ""]}
 
 
 # ---- horizon, filters, narrow ----
@@ -229,6 +229,21 @@ def test_a_long_tray_is_a_scroll_box_with_a_filter_field(run):
     assert out["longTrayNone"] == {"field": 1, "box": 0, "rows": 0, "badge": "0 / 12", "said": True}
     assert out["longTrayCleared"] == 12
     assert "overflow-y: auto" in SOURCE.split("\n.chm-tray {")[1].split("}")[0]              # its own rule: a scroll box
+
+
+def test_move_waits_for_a_change_and_run_now_says_what_it_does(run):
+    out, _view, _ids = run
+    assert out["moveButton"] == {"same": True, "estimate": False, "back": True, "start": False}
+    assert "Release this card at once. Its slot moves to now." in SOURCE and "'Cast now'" not in SOURCE
+
+
+def test_lanes_show_a_working_agent_and_every_listed_profile(run):
+    out, view, _ids = run
+    assert out["busyLanes"] == [["builder", "builder works on a card now"]]          # two of its cards run
+    assert out["rosterOff"] == {"enabled": True, "names": ["plain-name", "by-id"]}   # names from objects or strings
+    known = [lane["label"] for lane in view["lanes"]]
+    assert out["roster"] == {"lanes": known + ["herald"], "chip": True}              # builder is not doubled
+    assert "transition: opacity 0.15s ease, top 0.26s" in SOURCE                      # a bar glides to its new row
 
 
 def test_filters(run):

@@ -78,7 +78,7 @@ The owner's mark on a slot that the orchestrator must not move.
 _Avoid_: Lock, freeze
 
 **Run now**:
-To release a card at once and move its slot to now. The page calls it "Cast now".
+To release a card at once and move its slot to now.
 
 **Timer**:
 The part of the plugin that releases a card when its slot starts.

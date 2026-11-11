@@ -109,7 +109,9 @@ const EN = {
     card: id => `card ${id}`
   },
   action: {
-    now: 'Cast now',
+    now: 'Run now',
+    nowTip: 'Release this card at once. Its slot moves to now.',
+    same: 'Change the start or the estimate first.',
     save: 'Move',
     plan: 'Plan',
     pin: 'Pin',
@@ -123,10 +125,11 @@ const EN = {
     close: 'Close'
   },
   confirm: {
-    nowTitle: 'Cast now?',
+    nowTitle: 'Run this card now?',
     nowBody: title => `"${title}" is released at once and its slot moves to now.`,
-    nowAction: 'Cast now'
+    nowAction: 'Run now'
   },
+  lane: { working: name => `${name} works on a card now` },
   chronicle: { title: 'Changes', empty: 'No changes yet.', all: n => `Show all ${n} changes, labels included`, fewer: 'Show fewer' },
   filter: {
     label: 'Filters',
@@ -165,6 +168,39 @@ async function fetchPlan(horizon) {
 }
 
 const nowOf = data => Math.floor(Date.now() / 1000 + ((data && data.skew) || 0))
+
+const NO_NAMES = []
+
+/** The names of the profiles the app lists. A profile without an open card has no lane in the
+ * served plan; with this list it still gets one. Empty on an app that has no profile list. */
+function useRoster() {
+  const can = !!(host.profiles && typeof host.profiles.list === 'function')
+  const query = useQuery({
+    queryKey: [ID, 'profiles'],
+    queryFn: async () => {
+      const out = await host.profiles.list()
+
+      return ((out && out.profiles) || [])
+        .map(profile => (typeof profile === 'string' ? profile : profile && (profile.name || profile.id)))
+        .filter(name => typeof name === 'string' && name)
+    },
+    enabled: can,
+    staleTime: 60000
+  })
+
+  return can && Array.isArray(query.data) ? query.data : NO_NAMES
+}
+
+/** The plan with an empty lane for each listed profile that has none. */
+function withRoster(plan, roster) {
+  if (!plan || !roster.length) {
+    return plan
+  }
+
+  const missing = roster.filter(name => !plan.lanes.some(lane => lane.profile === name))
+
+  return missing.length ? { ...plan, lanes: [...plan.lanes, ...missing.map(name => ({ profile: name, label: name }))] } : plan
+}
 
 function usePlan(horizon) {
   return useQuery({
@@ -408,6 +444,10 @@ const CSS = `
   padding: 0 0.75rem; font-size: 0.8125rem; font-weight: 650; border-right: 1px solid var(--chm-line);
   background: linear-gradient(90deg, ${mix('var(--lane)', 26)}, ${mix('var(--lane)', 6)}); box-shadow: inset 3px 0 0 var(--lane); }
 .chm-lane-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.chm-lane, .chm-loom { transition: top 0.22s ease, height 0.22s ease; }
+.chm-lane-name[data-busy='1'] .chm-sigil { animation: chm-breathe 1.5s ease-in-out infinite; }
+.chm-lane-name[data-busy='1']::after { content: ''; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--ui-green);
+  box-shadow: 0 0 8px var(--ui-green); animation: chm-pulse 1.5s ease-in-out infinite; }
 .chm-sigil { flex: 0 0 auto; color: var(--lane, var(--chm-arc)); filter: drop-shadow(0 0 4px ${mix('var(--lane, var(--chm-arc))', 70)}); }
 .chm-tick { position: absolute; top: 24px; bottom: 0; width: 1px; background: var(--chm-line); opacity: 0.4; pointer-events: none; }
 .chm-tick[data-day='1'] { top: 0; opacity: 1; background: linear-gradient(180deg, var(--chm-arc), var(--chm-line) 46px); }
@@ -436,7 +476,7 @@ const CSS = `
 
 .chm-bar { position: absolute; height: ${ROW_H}px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0; border: 0;
   border-radius: 10px; background: transparent; color: var(--chm-ink); font: inherit; font-size: 0.75rem; line-height: 1; text-align: left;
-  white-space: nowrap; cursor: pointer; touch-action: none; z-index: 2; transition: opacity 0.15s ease; animation: chm-rise 0.3s ease both; }
+  white-space: nowrap; cursor: pointer; touch-action: none; z-index: 2; transition: opacity 0.15s ease, top 0.26s cubic-bezier(0.3, 1.35, 0.5, 1); animation: chm-rise 0.3s ease both; }
 .chm-bar[data-move='1'] { cursor: grab; }
 .chm-bar:focus-visible { outline: 2px solid var(--chm-ink); outline-offset: 2px; }
 .chm-body { position: relative; flex: 0 0 auto; height: 100%; box-sizing: border-box; border-radius: 10px; border: 1px solid var(--lane);
@@ -863,6 +903,9 @@ function Bar({ bar, lane, view, t }) {
   )
 }
 
+/** True while a card of this lane runs: its agent works now. */
+const working = lane => lane.bars.some(bar => bar.item.phase === 'running')
+
 function Loom({ data, view, t }) {
   const { layout, drag, clock, now } = view
   const within = ts => ts >= layout.start && ts <= layout.end
@@ -919,7 +962,12 @@ function Loom({ data, view, t }) {
       jsx('div', {
         className: 'chm-lane',
         style: { top: lane.top, height: lane.height, '--lane': lane.color },
-        children: el('div', { className: 'chm-lane-name', title: lane.label }, jsx(Sigil, { name: lane.profile }), jsx('span', { children: lane.profile ? lane.label : t('noProfile') }))
+        children: el(
+          'div',
+          { className: 'chm-lane-name', title: working(lane) ? t('lane.working', lane.label) : lane.label, 'data-busy': working(lane) ? '1' : '0' },
+          jsx(Sigil, { name: lane.profile }),
+          jsx('span', { children: lane.profile ? lane.label : t('noProfile') })
+        )
       }, `lane:${lane.profile}`)
     )
 
@@ -1054,6 +1102,7 @@ function Scroll({ item, data, color, view, t }) {
   const [minutes, setMinutes] = useState(String(item.estimate_min || data.default_estimate_min))
   const [label, setLabel] = useState('')
   const planned = item.planned_start !== null && item.planned_start !== undefined
+  const changed = !planned || start !== item.start_local || String(Math.round(Number(minutes))) !== String(item.estimate_min)
 
   useEffect(() => {
     setStart(item.start_local || data.suggest_local)
@@ -1127,13 +1176,13 @@ function Scroll({ item, data, color, view, t }) {
           { className: 'chm-form', onSubmit: save },
           el('label', { className: 'chm-field' }, t('scroll.start'), field({ type: 'datetime-local', value: start, required: true, style: { width: '13.5rem' }, onChange: event => setStart(event.target.value) })),
           el('label', { className: 'chm-field' }, t('scroll.estimate'), field({ type: 'number', min: 1, max: 20160, style: { width: '6.5rem' }, value: minutes, onChange: event => setMinutes(event.target.value) })),
-          jsx(Button, { size: 'sm', variant: 'outline', type: 'submit', children: t(planned ? 'action.save' : 'action.plan') })
+          jsx(Button, { size: 'sm', variant: 'outline', type: 'submit', disabled: !changed, title: changed ? undefined : t('action.same'), children: t(planned ? 'action.save' : 'action.plan') })
         )
       : null,
     el(
       'div',
       { className: 'chm-wrap' },
-      item.can.now ? jsx(Button, { size: 'sm', onClick: () => view.ask(item), children: el('span', { className: 'chm-wrap' }, icon('wand'), t('action.now')) }) : null,
+      item.can.now ? jsx(Button, { size: 'sm', title: t('action.nowTip'), onClick: () => view.ask(item), children: el('span', { className: 'chm-wrap' }, icon('play'), t('action.now')) }) : null,
       item.can.move && planned ? jsx(Button, { size: 'sm', variant: 'outline', onClick: () => void view.nudge(item, -SNAP_S), children: t('action.earlier') }) : null,
       item.can.move && planned ? jsx(Button, { size: 'sm', variant: 'outline', onClick: () => void view.nudge(item, SNAP_S), children: t('action.later') }) : null,
       item.can.pin ? jsx(Button, { size: 'sm', variant: 'outline', onClick: () => void view.run(() => api.pin(item.task_id, !item.pinned)), children: t(item.pinned ? 'action.unpin' : 'action.pin') }) : null,
@@ -1285,7 +1334,8 @@ function ChronomancerPage() {
   const frame = useRef(null)
   const live = useRef({})
   const query = usePlan(horizon)
-  const data = query.data
+  const roster = useRoster()
+  const data = useMemo(() => withRoster(query.data, roster), [query.data, roster])
 
   useEffect(() => {
     let alive = true
