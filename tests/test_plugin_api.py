@@ -61,15 +61,21 @@ def test_errors_are_http_answers(client, kanban):
     assert client.post(f"{BASE}/cards/t_run/slot").status_code == 409           # no body
 
 
-def test_without_the_agent_half_the_plan_is_readable_and_the_board_is_not(tmp_path, monkeypatch):
+@pytest.fixture
+def alone(tmp_path, monkeypatch, kanban):
+    """The dashboard backend in its own process: no agent half, Hermes's modules as stand-ins."""
     storage = types.ModuleType("plugins.plugin_storage")
     storage.plugin_data_dir = lambda name: tmp_path / "plugin-data" / name
     storage.plugin_db = lambda name, filename="data.db": __import__("sqlite3").connect(tmp_path / "plugin-data" / name / filename)
     (tmp_path / "plugin-data" / "chronomancer").mkdir(parents=True)
     config = types.ModuleType("hermes_cli.config")
     config.load_config_readonly = lambda: {"plugins": {"entries": {"chronomancer": {"settings": {"timezone": "Europe/Prague", "board": "ops"}}}}}
+    registry_module = types.ModuleType("tools.registry")
+    registry_module.registry = types.SimpleNamespace(dispatch=lambda tool, args: kanban(tool, args))
     for name, module in (("plugins", types.ModuleType("plugins")), ("plugins.plugin_storage", storage),
-                         ("hermes_cli", types.ModuleType("hermes_cli")), ("hermes_cli.config", config)):
+                         ("hermes_cli", types.ModuleType("hermes_cli")), ("hermes_cli.config", config),
+                         ("tools", types.ModuleType("tools")), ("tools.kanban_tools", types.ModuleType("tools.kanban_tools")),
+                         ("tools.registry", registry_module)):
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.delitem(sys.modules, "hermes_chronomancer_core", raising=False)
     spec = importlib.util.spec_from_file_location("chrono_dashboard_alone", ROOT / "dashboard" / "plugin_api.py")
@@ -78,13 +84,32 @@ def test_without_the_agent_half_the_plan_is_readable_and_the_board_is_not(tmp_pa
     app = FastAPI()
     app.include_router(module.router, prefix=BASE)
     http = TestClient(app)
-    body = http.get(f"{BASE}/plan").json()
-    assert body["board"] == "ops" and body["zone"] in ("CET", "CEST")
-    assert "not loaded" in body["board_error"] and body["items"] == [] and body["tray"] == []
-    refused = http.post(f"{BASE}/cards/t_1/slot", json={"start": "2999-01-01T10:00"})
-    assert refused.status_code == 409 and "cannot be reached" in refused.json()["detail"]
+    http.module = module
+    yield http
     for mod in [m for m in sys.modules if m.startswith("hermes_chronomancer_core")]:
         sys.modules.pop(mod, None)
+
+
+def test_without_the_agent_half_the_backend_plans_through_the_kanban_tools_of_its_process(alone, kanban):
+    kanban.add("t_1", "Upgrade ingress", status="ready", assignee="builder")
+    body = alone.get(f"{BASE}/plan").json()
+    assert (body["board"], body["board_error"]) == ("ops", "") and body["zone"] in ("CET", "CEST")
+    assert [c["title"] for c in body["tray"]] == ["Upgrade ingress"]
+    assert {args.get("board") for _, args in kanban.calls} == {"ops"}             # the configured board
+    made = alone.post(f"{BASE}/cards/t_1/slot", json={"start": "2999-01-01T10:00"})
+    assert made.status_code == 200 and kanban.status("t_1") == "scheduled"
+    runtime = sys.modules["hermes_chronomancer_core.runtime"]
+    (active,) = [r for r in runtime._RUNTIMES.values() if r.planner is alone.module._api().planner]
+    assert active.timer is None                                                    # the timer stays in the gateway
+
+
+def test_a_dashboard_process_without_kanban_tools_still_serves_the_plan(alone, kanban, monkeypatch):
+    monkeypatch.delitem(sys.modules, "tools.kanban_tools")
+    monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))           # importing the kanban tools fails
+    body = alone.get(f"{BASE}/plan").json()
+    assert "kanban_list failed (ModuleNotFoundError)" in body["board_error"] and body["items"] == [] and body["tray"] == []
+    refused = alone.post(f"{BASE}/cards/t_1/slot", json={"start": "2999-01-01T10:00"})
+    assert refused.status_code == 409 and "cannot be reached" in refused.json()["detail"]
 
 
 def test_a_broken_store_is_a_503_without_details(client, monkeypatch):

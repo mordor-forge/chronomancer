@@ -16,9 +16,13 @@ signed-in dashboard session) and scopes it to the requested profile. These route
 of their own: see ``chronomancer/desktop.py`` for the trust statement and for the logic. This file
 only maps HTTP to it.
 
-Hermes imports this file by path, outside the plugin's package. The core package is found through
-the loaded agent half (same process, same planner and timer) or loaded from this checkout. Without
-the agent half the plan can be read, but the Kanban board cannot.
+Hermes imports this file by path, outside the plugin's package, and usually in another process
+than the agent half: the dashboard server and the gateway are separate services. So:
+
+- When the agent half is loaded in this process, its planner (and timer) is used.
+- Otherwise this file builds a planner of its own on the same plan database, loaded from this
+  checkout. It reaches the Kanban through the tool registry of this process, after importing only
+  the kanban tools. The timer stays in the gateway.
 """
 from __future__ import annotations
 
@@ -101,9 +105,19 @@ def _setting(key: str, default: Any = None) -> Any:
     return default
 
 
+def _kanban(tool: str, args: dict) -> Any:
+    """The kanban tools of this process. There is no ``ctx.dispatch_tool`` here (see the module
+    docstring), so the registry is asked directly. Only the kanban tools are imported: the rest of
+    the tool registry (MCP servers, browsers, ...) stays unloaded in the dashboard process."""
+    import tools.kanban_tools  # noqa: F401  (registers kanban_* in the registry)
+    from tools.registry import registry
+
+    return registry.dispatch(tool, args)
+
+
 def _api() -> Any:
     """The Desktop API for the request's profile: the agent half's planner when it is loaded in
-    this process, else a planner of its own that cannot reach the board."""
+    this process, else a planner of its own on the same plan database."""
     from plugins.plugin_storage import plugin_data_dir, plugin_db
 
     data_dir = plugin_data_dir(PLUGIN_NAME)
@@ -113,7 +127,7 @@ def _api() -> Any:
     with _LOCK:
         active = runtime.get(key)
         if active is None:
-            active = runtime.build(data_dir, dispatch=None, read_setting=_setting, timer=False,
+            active = runtime.build(data_dir, dispatch=_kanban, read_setting=_setting, timer=False,
                                    prepare=lambda filename: plugin_db(PLUGIN_NAME, filename))
         api = _APIS.get(key)
         if api is None or api.planner is not active.planner:
