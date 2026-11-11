@@ -224,4 +224,4 @@ def test_the_docs_speak_the_glossary():
     glossary = (ROOT / "GLOSSARY.md").read_text()
     for term in ("**Slot**", "**Clash**", "**Horizon**", "**Pin**", "**Release**", "**Label**"):
         assert term in glossary
-    assert sorted(p.name[:4] for p in (ROOT / "docs" / "adr").glob("*.md")) == [f"{n:04d}" for n in range(1, 8)]
+    assert sorted(p.name[:4] for p in (ROOT / "docs" / "adr").glob("*.md")) == [f"{n:04d}" for n in range(1, 9)]

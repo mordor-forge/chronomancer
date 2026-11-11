@@ -164,6 +164,15 @@ cd tests && uv run --no-project --with pytest --with pyyaml --with fastapi --wit
 
 Words are defined in `GLOSSARY.md`. Decisions are in `docs/adr/`.
 
+## Next
+
+Not in this version:
+
+- Several gateways on one timeline. A board lives on one host, so each gateway has its own plan today
+  (`docs/adr/0008-several-gateways-one-plan-each-merged-on-the-desktop.md`).
+- A Block action on a running card, a link from a card to its issue in a tracker, profile pictures on
+  the lanes, and a free zoom of the timeline.
+
 ## License
 
 MIT. Chronomancer builds on the Hermes Kanban, which does the hard part: durable cards, atomic
