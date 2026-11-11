@@ -1,39 +1,41 @@
 // Runs desktop/plugin.js in Node against stand-ins for the three modules the Desktop app provides,
 // and prints what it registered and rendered as JSON. Used by test_desktop_plugin.py.
-//   node desktop_harness.mjs <path to plugin.js>
+//   node desktop_harness.mjs <path to plugin.js> <path to a plan view as JSON>
+// The plan view is what the plugin's backend serves for the demo scenario, so the page is rendered
+// from real backend output, not from hand-written data.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const SDK = `
-const G = globalThis.__cw
+const G = globalThis.__chm
 const marker = name => name
 export const Badge = marker('Badge'), Button = marker('Button'), Codicon = marker('Codicon')
-export const ConfirmDialog = marker('ConfirmDialog'), EmptyState = marker('EmptyState'), ErrorState = marker('ErrorState')
-export const Tip = marker('Tip'), CopyButton = marker('CopyButton')
+export const ConfirmDialog = marker('ConfirmDialog'), ErrorState = marker('ErrorState'), Tip = marker('Tip')
 export const ROUTES_AREA = 'routes', SIDEBAR_NAV_AREA = 'sidebar.nav', PALETTE_AREA = 'palette'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' }
-export const KANBAN_CARD_AREAS = { badges: 'kanban.card.badges' }
 export const atom = value => ({ get: () => value })
 export const useValue = a => a.get()
 export const host = G.host
 export const queryClient = G.queryClient
 export const usePluginI18n = () => G.t
-export const useQuery = options => { G.queryOptions.push(options); return G.queries[options.queryKey[1]] }
+export const useQuery = options => { G.queryOptions.push(options); return G.query }
+export const profileColor = name => (name && name !== 'default' ? 'app-color(' + name + ')' : null)
 `
 const REACT = `
-const G = globalThis.__cw
+const G = globalThis.__chm
 export const useState = initial => G.useState(initial)
 export const useRef = initial => G.useRef(initial)
 export const useEffect = () => {}
+export const useMemo = make => make()
 `
 const JSX = `
 const render = (type, props, key) => (typeof type === 'function' ? type(props) : { type, props, key })
 export const jsx = render, jsxs = render
 `
 
-const dir = mkdtempSync(join(tmpdir(), 'cw-desktop-'))
+const dir = mkdtempSync(join(tmpdir(), 'chm-desktop-'))
 const out = {}
 try {
   const url = name => JSON.stringify(pathToFileURL(join(dir, name)).href)
@@ -45,6 +47,7 @@ try {
     .replace(/from 'react\/jsx-runtime'/, `from ${url('jsx.mjs')}`)
     .replace(/from 'react'/, `from ${url('react.mjs')}`)
   writeFileSync(join(dir, 'plugin.mjs'), source)
+  const VIEW = JSON.parse(readFileSync(process.argv[3], 'utf8'))
 
   // -- the stand-in app ---------------------------------------------------------------------
   const bundles = {}
@@ -56,12 +59,17 @@ try {
     missing.push(key)
     return key
   }
-  const G = (globalThis.__cw = {
+  const listeners = {}
+  globalThis.window = {
+    addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn) },
+    removeEventListener: (type, fn) => { listeners[type] = (listeners[type] || []).filter(f => f !== fn) }
+  }
+  const fire = (type, event) => (listeners[type] || []).slice().forEach(fn => fn({ type, ...event }))
+  const G = (globalThis.__chm = {
     t,
-    queries: {},
+    query: {},
     queryOptions: [],
-    // Hooks by call order, as React keeps them. Every hook of the plugin is in the page component,
-    // so the order is the same on every render; `page()` restarts the count.
+    // Hooks by call order, as React keeps them; `page()` restarts the count.
     slots: [],
     hook: 0,
     useState: initial => {
@@ -77,10 +85,8 @@ try {
     host: { state: { viewport: { get: () => G.viewport } }, navigations: [], notices: [],
             navigate: path => G.host.navigations.push(path), notify: n => G.host.notices.push(n) },
     viewport: { width: 1400, height: 900, narrow: false },
-    cacheListeners: [],
     invalidated: [],
     queryClient: {
-      getQueryCache: () => ({ subscribe: fn => { G.cacheListeners.push(fn); return () => { G.disposedCache = true } } }),
       prefetchQuery: async options => options.queryFn(),
       invalidateQueries: async filter => { G.invalidated.push(filter) }
     }
@@ -88,72 +94,18 @@ try {
   const restCalls = []
   let restError = null
   const contributions = []
-  const disposers = []
+  const stored = {}
   const ctx = {
     rest: async (path, opts) => {
-      restCalls.push({ path, opts: opts || null })
+      restCalls.push({ path, method: (opts && opts.method) || 'GET', body: (opts && opts.body) || null })
       if (restError) throw restError
-      return path === '/windows' ? DATA : { ok: true }
+      if (path.startsWith('/plan')) return VIEW
+      return { change: { action: 'move', message: `done ${path}`, clashes: path.includes('clashing') ? ['x'] : [] } }
     },
+    storage: { get: key => stored[key], set: (key, value) => { stored[key] = value } },
     i18n: { register: b => Object.assign(bundles, b), t },
     register: c => { contributions.push(c); return () => {} },
-    registerMany: cs => { contributions.push(...cs); return () => {} },
-    onDispose: fn => disposers.push(fn)
-  }
-
-  // -- synthetic data -----------------------------------------------------------------------
-  const NOW = Math.floor(Date.now() / 1000)
-  // "Today" starts ten hours before now, so the fixed offsets below stay inside the first day.
-  const DAY0 = NOW - 10 * 3600
-  const DAYS = [{ start: DAY0, end: DAY0 + 86400, label: 'Tue 10 Nov' }, { start: DAY0 + 86400, end: DAY0 + 172800, label: 'Wed 11 Nov' }]
-  // What change_windows/overlaps.py `explain` serves for one conflict (the page writes none of these words).
-  const conflictWith = (id, state, mine, consequence = `Approving this window is refused while 'name ${id}' is approved.`) => ({
-    id, name: `name ${id}`, scope: 'k8s-prod', state, span: `span ${id}`, proposer: 'dba', exclusive: true,
-    start_ts: NOW + 3600, end_ts: NOW + 7200, overlap: '11:00-12:00', length: '1 h', text: 'overlaps 11:00-12:00, 1 h',
-    label: `Overlaps 'name ${id}' 11:00-12:00, 1 h`,
-    why: 'same scope k8s-prod; both windows are exclusive', consequence,
-    way_out: 'Decline one of them, or ask the agent to propose another time.',
-    title: `This window and 'name ${id}' overlap`,
-    rows: [['Other window', `name ${id} · ${state} · span ${id} · scope k8s-prod · proposed by profile 'dba'`], ['Shared span', '11:00-12:00, 1 h'],
-           ['Rule', 'same scope k8s-prod; both windows are exclusive'], ['What it means', consequence],
-           ['Ways out', 'Decline one of them, or ask the agent to propose another time.']],
-    pair: `Overlap: 'name ${mine}' and 'name ${id}', 11:00-12:00, 1 h`, note: 'overlap 1 h'
-  })
-  const win = (id, extra) => ({
-    id, name: `name ${id}`, scope: 'k8s-prod', start_ts: NOW + 3630, end_ts: NOW + 7230, exclusive: true, presence: false,
-    state: 'pending', kind: 'planned', reason: `reason ${id}`, cards: [], checked_in_at: null, closed_at: null,
-    decided_via: null, open: false, span: `span ${id}`, overlaps: [], conflicts: [], proposer: 'ops', proposed: "proposed by profile 'ops'",
-    starts: 'Tue 10 Nov 11:00', decided_at: null, decided_when: '', closed_when: '', card_details: [], ...extra
-  })
-  const DATA = {
-    now: NOW, approval: true, mode: 'enforce', start: DAY0, days: DAYS, zone: 'UTC',
-    windows: [
-      win('WAAAAA1', { overlaps: ['WAAAAA2'], conflicts: [conflictWith('WAAAAA2', 'approved', 'WAAAAA1')],
-                       cards: [{ task_id: 't_pending', board: '' }],
-                       card_details: [{ task_id: 't_pending', title: '<b>Upgrade Postgres</b>', status: 'blocked', assignee: 'dba' }] }),
-      win('WAAAAA2', { state: 'approved', decided_via: 'telegram', decided_at: NOW - 3000, decided_when: 'Tue 10 Nov 09:10',
-                       overlaps: ['WAAAAA1'], conflicts: [conflictWith('WAAAAA1', 'pending', 'WAAAAA2', "Approving 'name WAAAAA1' is refused while this window is approved.")],
-                       cards: [{ task_id: 't_next', board: '' }, { task_id: 't_both', board: '' }] }),
-      win('WAAAAA3', { state: 'approved', decided_via: 'desktop', decided_at: NOW - 900, decided_when: 'Tue 10 Nov 09:45',
-                       open: true, scope: 'infra', start_ts: NOW - 600, end_ts: NOW + 2550, starts: 'Tue 10 Nov 09:50',
-                       cards: [{ task_id: 't_open', board: '' }, { task_id: 't_both', board: '' }] }),
-      win('WAAAAA4', { state: 'declined', decided_via: 'miniapp', decided_at: NOW - 9900, decided_when: 'Mon 09 Nov 21:15',
-                       cards: [{ task_id: 't_done', board: '' }] }),
-      win('WAAAAA5', { state: 'pending', start_ts: NOW - 7200, end_ts: NOW - 3600 }),
-      win('WAAAAA6', { state: 'closed', closed_at: NOW - 60, closed_when: 'Tue 10 Nov 09:59', decided_via: 'telegram',
-                       decided_at: NOW - 9000, decided_when: 'Tue 10 Nov 07:30', start_ts: NOW - 7200, end_ts: NOW + 60 }),
-      win('WAAAAA7', { state: 'approved', decided_at: NOW - 100, decided_when: 'Tue 10 Nov 09:58', starts: 'Wed 11 Nov 08:00',
-                       scope: 'staging', start_ts: DAY0 + 86400 + 8 * 3600, end_ts: DAY0 + 86400 + 9 * 3600 })
-    ]
-  }
-  const AUDIT = {
-    audit: [{ id: 1, ts: NOW - 30, verdict: 'blocked', tool: 'terminal', rule_ids: '["k8s-write"]', scopes: '["k8s-prod"]', window_id: null }],
-    decisions: [{ window_id: 'WAAAAA3', name: 'name WAAAAA3', scope: 'infra', state: 'approved', decided_at: NOW - 900,
-                  decided_by: 'desktop', decided_via: 'desktop', when: 'Tue 10 Nov 13:45 UTC' },
-                { window_id: 'WAAAAA6', name: 'name WAAAAA6', scope: 'infra', state: 'closed', decided_at: NOW - 9000,
-                  decided_by: 'telegram:100200300', decided_via: 'telegram', when: 'Tue 10 Nov 11:30 UTC' },
-                { window_id: 'WAAAAA4', name: 'name WAAAAA4', scope: 'infra', state: 'declined', decided_at: NOW - 9900,
-                  decided_by: 'telegram:100200300', decided_via: 'miniapp' }]
+    registerMany: cs => { contributions.push(...cs); return () => {} }
   }
 
   // -- helpers ------------------------------------------------------------------------------
@@ -164,190 +116,237 @@ try {
       if (node.props) for (const value of Object.values(node.props)) walk(value, visit)
     } else if (typeof node === 'string') visit(node)
   }
-  const texts = tree => { const all = []; walk(tree, n => { if (typeof n === 'string') all.push(n) }); return all }
+  // The words a person reads: strings reached through `children` only (not class names or icon names).
+  const texts = tree => {
+    if (typeof tree === 'string') return [tree]
+    if (typeof tree === 'number') return [String(tree)]
+    if (Array.isArray(tree)) return tree.flatMap(texts)
+    return tree && tree.props && tree.type !== 'style' ? texts(tree.props.children) : []
+  }
   const nodes = (tree, type) => { const all = []; walk(tree, n => { if (n && n.type === type) all.push(n) }); return all }
+  const withClass = (tree, name) => { const all = []; walk(tree, n => { if (n && n.props && n.props.className === name) all.push(n) }); return all }
   const label = node => texts(node.props.children).join('')
-  const having = (tree, prop) => { const all = []; walk(tree, n => { if (n && n.props && n.props[prop] !== undefined) all.push(n) }); return all }
-  const runway = tree => {
-    const svg = having(tree, 'data-runway')[0]
-    if (!svg) return null
-    return {
-      kind: svg.props['data-runway'], label: svg.props['aria-label'], role: svg.props.role, viewBox: svg.props.viewBox,
-      days: having(svg, 'data-day').length,
-      bars: having(svg, 'data-bar').map(b => ({ id: b.props['data-bar'], kind: b.props['data-kind'], lit: b.props['data-lit'],
-        label: b.props['aria-label'], role: b.props.role, tabIndex: b.props.tabIndex, dim: b.props.style.opacity < 1,
-        keys: typeof b.props.onKeyDown === 'function' && typeof b.props.onClick === 'function' })),
-      bands: having(svg, 'data-band').filter(b => b.props['data-band'] === 'overlap')
-        .map(b => ({ label: b.props['aria-label'], strong: b.props['data-strong'], text: texts(b.props.children).filter(x => x.includes('overlap')) })),
-      night: having(svg, 'data-band').filter(b => b.props['data-band'] === 'night').length,
-      needle: having(svg, 'data-needle').map(n => n.props['data-needle']),
-      patterns: nodes(svg, 'pattern').map(n => n.props.id),
-      readout: having(tree, 'data-readout').map(n => label(n))[0]
-    }
-  }
-  const door = tree => having(tree, 'data-door').map(n => ({ kind: n.props['data-door'], mode: n.props['data-mode'], role: n.props.role,
-    icon: nodes(n, 'Codicon')[0].props.name, lines: nodes(n, 'p').map(label) }))[0] || null
-  const cardsLit = tree => having(tree, 'data-window').filter(n => n.props['data-lit'] === 'yes').map(n => n.props['data-window'])
-  const panel = tree => having(tree, 'data-conflict').map(n => ({ on: n.props['data-conflict'], title: n.props['aria-label'], role: n.props.role,
-    rows: nodes(n, 'dt').map(label).map((term, i) => [term, label(nodes(n, 'dd')[i])]), buttons: nodes(n, 'Button').map(label) }))
-  const summary = tree => ({
-    texts: texts(tree),
-    types: [...new Set((() => { const all = []; walk(tree, n => { if (n && n.type) all.push(n.type) }); return all })())],
-    buttons: nodes(tree, 'Button').map(b => ({ label: label(b), size: b.props.size, variant: b.props.variant || 'default' }))
-  })
-  const setQueries = (data, extra = {}) => {
-    G.queries = { windows: { data, isError: false, error: null, refetch: () => {}, ...extra },
-                  audit: { data: data ? AUDIT : undefined, isError: false } }
-  }
+  const setQuery = (data, extra = {}) => { G.query = { data, isError: false, error: null, dataUpdatedAt: 1, refetch: () => {}, ...extra } }
+  const settle = () => new Promise(resolve => setTimeout(resolve, 0))
 
   // -- run ----------------------------------------------------------------------------------
   const plugin = (await import(pathToFileURL(join(dir, 'plugin.mjs')).href)).default
   plugin.register(ctx)
-  await new Promise(resolve => setTimeout(resolve, 0))
+  await settle()
   out.id = plugin.id
+  out.name = plugin.name
   out.prefetch = restCalls.map(c => c.path)
-  out.contributions = contributions.map(c => ({ id: c.id, area: c.area, data: c.data ? { ...c.data, run: undefined, decorate: undefined } : null,
-                                               render: typeof c.render === 'function' }))
+  out.contributions = contributions.map(c => ({ id: c.id, area: c.area, data: c.data ? { ...c.data, run: undefined } : null, render: typeof c.render === 'function' }))
   const byId = id => contributions.filter(c => c.id === id).at(-1)
   const page = () => { G.hook = 0; return byId('page').render() }
+  const DATA = { ...VIEW, skew: VIEW.now - Date.now() / 1000 }
+  const bars = tree => withClass(tree, 'chm-bar')
+  const barOf = (tree, id) => bars(tree).find(b => b.props['aria-label'].startsWith(VIEW.items.find(i => i.task_id === id).title))
+  const press = (tree, text) => nodes(tree, 'Button').find(b => label(b) === text).props.onClick()
 
-  setQueries({ ...DATA, skew: 0 })
-  out.wide = summary(page())
-  out.door = door(page())
-  out.runway = runway(page())
-  out.groups = having(page(), 'data-group').map(n => n.props['data-group'])
-  out.stamps = Object.fromEntries(having(page(), 'data-window').map(n => [n.props['data-window'], label(having(n, 'data-stamp')[0])]))
-  out.cardChips = having(page(), 'data-card').map(n => ({ id: n.props['data-card'], type: n.type, text: label(n) }))
-  out.overlapChips = having(page(), 'data-overlap').map(n => ({ to: n.props['data-overlap'], type: n.type, text: label(n), expanded: n.props['aria-expanded'] }))
-  out.copies = nodes(page(), 'CopyButton').map(n => n.props.text)
-  out.ledger = having(page(), 'data-verdict').map(n => ({ verdict: n.props['data-verdict'], cells: nodes(n, 'span').map(label), icon: nodes(n, 'Codicon')[0].props.name }))
-  out.articles = having(page(), 'data-window').map(n => ({ type: n.type, tabIndex: n.props.tabIndex, label: n.props['aria-label'] }))[0]
+  setQuery(DATA)
+  let tree = page()
+  out.wide = {
+    texts: texts(tree),
+    style: nodes(tree, 'style').length,
+    headline: label(withClass(tree, 'chm-headline')[0]),
+    facts: withClass(tree, 'chm-fact').map(n => [n.props['data-kind'], label(n)]),
+    horizon: nodes(withClass(tree, 'chm-seg')[0], 'button').map(b => [label(b), b.props['aria-pressed']]),
+    lanes: withClass(tree, 'chm-lane-name').map(label),
+    laneColors: withClass(tree, 'chm-lane').map(n => n.props.style['--lane']),
+    bars: bars(tree).map(b => ({ label: b.props['aria-label'], phase: b.props['data-phase'], clash: b.props['data-clash'], move: b.props['data-move'],
+      hatch: withClass(b, 'chm-hatch').length, over: withClass(b, 'chm-over').length, left: b.props.style.left, width: b.props.style.width, top: b.props.style.top,
+      title: b.props.title, type: b.type })),
+    nights: withClass(tree, 'chm-night').length,
+    needle: withClass(tree, 'chm-now').length,
+    nowLabel: withClass(tree, 'chm-now-label').map(label),
+    days: withClass(tree, 'chm-day-label').map(label),
+    tray: withClass(tree, 'chm-row').map(n => ({ title: label(withClass(n, 'chm-row-title')[0]), status: label(nodes(n, 'Badge')[0]) })),
+    chronicle: withClass(tree, 'chm-entry').map(n => ({ text: label(nodes(n, 'span')[0]), owner: n.props['data-owner'], icon: nodes(n, 'Codicon')[0].props.name })),
+    later: withClass(tree, 'chm-quiet').map(label),
+    chips: withClass(tree, 'chm-chip').map(n => ({ text: label(n), pressed: n.props['aria-pressed'] })),
+    scroll: withClass(tree, 'chm-card').length,
+    loomHeight: withClass(tree, 'chm-loom')[0].props.style.height
+  }
 
-  // the runway: focus reads a bar out, a click marks its card
-  const barOf = id => having(page(), 'data-bar').find(b => b.props['data-bar'] === id)
-  barOf('WAAAAA2').props.onFocus()
-  out.focused = runway(page())
-  barOf('WAAAAA2').props.onBlur()
-  let prevented = 0
-  barOf('WAAAAA3').props.onKeyDown({ key: 'Enter', preventDefault: () => { prevented += 1 } })
-  barOf('WAAAAA3').props.onKeyDown({ key: 'a', preventDefault: () => { prevented += 1 } })
-  out.picked = { lit: cardsLit(page()), prevented }
+  // select a clashing slot: the scroll shows it; its partner is marked
+  const clashing = VIEW.items.find(i => i.clash && i.phase === 'planned' && i.next_free_text)
+  barOf(tree, clashing.task_id).props.onClick()
+  tree = page()
+  const scroll = withClass(tree, 'chm-card')[0]
+  out.selected = {
+    id: clashing.task_id,
+    title: label(nodes(scroll, 'h3')[0]),
+    texts: texts(scroll),
+    clashes: withClass(scroll, 'chm-clash').map(n => ({ kind: n.props['data-kind'], text: texts(n.props.children)[0] })),
+    buttons: nodes(scroll, 'Button').map(label),
+    inputs: nodes(scroll, 'input').map(n => [n.props.type || 'text', n.props.value]),
+    partners: bars(tree).filter(b => b.props['data-partner'] === '1').map(b => b.props['aria-label'].split(',')[0]),
+    pressed: bars(tree).filter(b => b.props['aria-pressed']).length
+  }
 
-  // an overlap chip leads to the other window's card and explains the conflict there
-  const chipOn = (from, to) => having(page(), 'data-window').find(n => n.props['data-window'] === from)
-  const overlapButton = (from, to) => having(chipOn(from), 'data-overlap').find(n => n.props['data-overlap'] === to)
-  overlapButton('WAAAAA1', 'WAAAAA2').props.onClick()
-  out.conflict = { panel: panel(page()), lit: cardsLit(page()), runway: runway(page()),
-                   expanded: having(page(), 'data-overlap').map(n => [n.props['data-overlap'], n.props['aria-expanded']]) }
-  nodes(having(page(), 'data-conflict')[0], 'Button').find(b => label(b).startsWith('Show')).props.onClick()
-  out.conflictBack = { panel: panel(page()).map(x => x.on), lit: cardsLit(page()) }
-  nodes(having(page(), 'data-conflict')[0], 'Button').find(b => label(b) === 'Close explanation').props.onClick()
-  out.conflictClosed = { panels: panel(page()).length, bands: runway(page()).bands.map(b => b.strong), dim: runway(page()).bars.some(b => b.dim) }
-  G.slots = []
-
-  // the door in its other states
-  setQueries({ ...DATA, windows: DATA.windows.filter(w => !w.open), skew: 0 })
-  out.doorNext = door(page())
-  setQueries({ ...DATA, windows: DATA.windows.filter(w => w.state !== 'approved'), skew: 0 })
-  out.doorClosed = door(page())
-  setQueries({ ...DATA, mode: 'warn', skew: 0 })
-  out.doorWarn = door(page())
-  setQueries({ ...DATA, mode: 'off', windows: [], skew: 0 })
-  out.doorOff = door(page())
-  // a backend from before the runway: no days, no conflict details, no formatted moments
-  const old = w => { const { conflicts, proposer, proposed, starts, decided_when, closed_when, card_details, decided_at, ...rest } = w; return rest }
-  setQueries({ now: NOW, approval: true, windows: DATA.windows.map(old), skew: 0 })
-  out.oldBackend = { runway: runway(page()), door: door(page()), chips: having(page(), 'data-overlap').map(label),
-                     buttons: summary(page()).buttons.length }
-  setQueries({ ...DATA, skew: 0 })
-  out.pollMs = [...new Set(G.queryOptions.map(o => o.refetchInterval))]
-  out.queryKeys = [...new Set(G.queryOptions.map(o => JSON.stringify(o.queryKey)))]
-
-  G.viewport = { width: 390, height: 800, narrow: true }
-  out.narrow = summary(page())
-  out.ladder = runway(page())
-  G.viewport = { width: 1400, height: 900, narrow: false }
-  // a wide window with a small content column (a docked sidebar) also gets the ladder
-  G.slots = [null, null, null, null, 420]
-  out.squeezed = runway(page()).kind
-  G.slots = [null, null, null, null, 900]
-  out.measured = runway(page()).viewBox
-  G.slots = []
-
-  setQueries({ ...DATA, approval: false, skew: 0 })
-  out.approvalOff = summary(page())
-
-  setQueries(undefined)
-  out.loading = summary(page())
-  setQueries(undefined, { isError: true, error: new Error('404: {"detail":"Plugin not found"}') })
-  out.loadError = summary(page())
-  out.loadErrorProps = nodes(page(), 'ErrorState').map(n => ({ title: n.props.title, description: n.props.description }))
-  setQueries({ ...DATA, windows: [], skew: 0 })
-  out.empty = nodes(page(), 'EmptyState').map(n => n.props.title)
-
-  // approve: dialog, confirm twice (same key), reopen (new key), then a refused request
-  setQueries({ ...DATA, skew: 0 })
+  // the moves, each one request
   restCalls.length = 0
-  const press = text => nodes(page(), 'Button').find(b => label(b) === text).props.onClick()
-  press('Approve')
-  const dialog = () => nodes(page(), 'ConfirmDialog')[0]
-  out.dialog = { title: dialog().props.title, description: dialog().props.description, confirmLabel: dialog().props.confirmLabel,
-                 destructive: dialog().props.destructive, open: dialog().props.open }
-  await dialog().props.onConfirm()
-  await dialog().props.onConfirm()
-  dialog().props.onClose()
-  out.dialogClosed = nodes(page(), 'ConfirmDialog').length === 0
-  press('Approve')
-  await dialog().props.onConfirm()
-  dialog().props.onClose()
-  out.approveCalls = restCalls.slice()
+  press(tree, '15 min later')
+  await settle()
+  press(page(), nodes(withClass(page(), 'chm-card')[0], 'Button').map(label).find(x => x.startsWith('Next free start')))
+  await settle()
+  press(page(), 'Pin')
+  await settle()
+  press(page(), 'Unplan')
+  await settle()
+  const forms = nodes(withClass(page(), 'chm-card')[0], 'form')
+  nodes(forms[0], 'input')[0].props.onChange({ target: { value: '2030-01-02T09:30' } })
+  nodes(forms[0], 'input')[1].props.onChange({ target: { value: '75' } })
+  nodes(withClass(page(), 'chm-card')[0], 'form')[0].props.onSubmit({ preventDefault: () => {} })
+  await settle()
+  nodes(nodes(withClass(page(), 'chm-card')[0], 'form')[1], 'input')[0].props.onChange({ target: { value: ' op:upgrade ' } })
+  nodes(withClass(page(), 'chm-card')[0], 'form')[1].props.onSubmit({ preventDefault: () => {} })
+  await settle()
+  out.moves = restCalls.filter(c => !c.path.startsWith('/plan'))
   out.notices = G.host.notices.slice()
   out.invalidated = G.invalidated.length
 
-  press('Close now')
-  out.closeDialog = { title: dialog().props.title, destructive: dialog().props.destructive }
-  restError = new Error('Error invoking remote method: Error: 409: {"detail":"window WAAAAA1 overlaps approved WAAAAA2"}')
-  out.refused = await dialog().props.onConfirm().then(() => 'resolved', e => e.message)
+  // cast now: a dialog first
+  restCalls.length = 0
+  press(page(), 'Cast now')
+  const dialog = () => nodes(page(), 'ConfirmDialog')[0]
+  out.dialog = { title: dialog().props.title, description: dialog().props.description, confirmLabel: dialog().props.confirmLabel, open: dialog().props.open }
+  dialog().props.onClose()
+  out.dialogClosed = nodes(page(), 'ConfirmDialog').length === 0
+  press(page(), 'Cast now')
+  await dialog().props.onConfirm()
+  out.cast = restCalls.filter(c => !c.path.startsWith('/plan'))
+
+  // a refused move shows the backend's sentence
+  G.host.notices.length = 0
+  restError = new Error('Error invoking remote method: Error: 409: {"detail":"The owner pinned this slot."}')
+  press(page(), '15 min earlier')
+  await settle()
   restError = new Error('socket hang up')
-  out.unreachable = await dialog().props.onConfirm().then(() => 'resolved', e => e.message)
+  press(page(), '15 min earlier')
+  await settle()
   restError = null
-  dialog().props.onClose()
-  press('Decline')
-  out.declineDialog = { title: dialog().props.title, destructive: dialog().props.destructive }
-  dialog().props.onClose()
+  out.refused = G.host.notices.slice()
 
-  // status-bar chip
-  const chip = () => { G.hook = 0; return byId('chip').render() }
-  const chipOf = tree => (tree ? { tip: tree.props.label, text: texts(tree.props.children).join(''), icon: nodes(tree, 'Codicon')[0].props.name } : null)
-  out.chipOpen = chipOf(chip())
-  const tree = chip()
-  nodes(tree, 'button')[0].props.onClick()
-  setQueries({ ...DATA, windows: DATA.windows.filter(w => !w.open), skew: 0 })
-  out.chipNext = chipOf(chip())
-  setQueries({ ...DATA, windows: DATA.windows.filter(w => w.state !== 'approved'), skew: 0 })
-  out.chipNone = chipOf(chip())
-  setQueries({ ...DATA, mode: 'warn', skew: 0 })
-  out.chipWarn = chipOf(chip())
-  setQueries(undefined)
-  out.chipLoading = chipOf(chip())
+  // keyboard: arrows move the focused bar; other keys do nothing
+  restCalls.length = 0
+  let prevented = 0
+  const key = k => barOf(page(), clashing.task_id).props.onKeyDown({ key: k, preventDefault: () => { prevented += 1 } })
+  key('ArrowRight')
+  key('a')
+  await settle()
+  out.keyboard = { prevented, calls: restCalls.filter(c => !c.path.startsWith('/plan')) }
 
-  // palette and Kanban badges
+  // drag a bar: 4 px is a click, a real drag moves the slot by whole quarter hours
+  G.slots = []
+  tree = page()
+  const frame = G.slots.find(s => s && typeof s === 'object' && 'current' in s && s.current === null)
+  frame.current = { getBoundingClientRect: () => ({ left: 100, top: 0, width: 960, height: 400 }) }
+  restCalls.length = 0
+  const future = VIEW.items.filter(i => i.phase === 'planned' && i.can.move).at(-1)
+  const scale = (960 - 132) / (VIEW.horizon.end - VIEW.horizon.start)
+  barOf(page(), future.task_id).props.onPointerDown({ button: 0, clientX: 500 })
+  fire('pointermove', { clientX: 503 })
+  fire('pointerup', { clientX: 503 })
+  out.dragTiny = { calls: restCalls.length, listeners: Object.values(listeners).flat().length }
+  barOf(page(), future.task_id).props.onPointerDown({ button: 0, clientX: 500 })
+  fire('pointermove', { clientX: 500 + 3600 * scale })
+  const during = page()
+  out.dragDuring = { guide: withClass(during, 'chm-guide-label').map(label), dragging: bars(during).filter(b => b.props['data-drag'] === '1').length }
+  fire('pointerup', { clientX: 500 + 3600 * scale })
+  await settle()
+  out.drag = { calls: restCalls.filter(c => !c.path.startsWith('/plan')), expected: future.start + 3600, id: future.task_id,
+               listeners: Object.values(listeners).flat().filter(f => f.name !== 'swallow').length }
+  // a running card does not move
+  restCalls.length = 0
+  const running = VIEW.items.find(i => i.phase === 'running')
+  barOf(page(), running.task_id).props.onPointerDown({ button: 0, clientX: 500 })
+  fire('pointermove', { clientX: 700 })
+  fire('pointerup', { clientX: 700 })
+  out.dragRunning = restCalls.length
+
+  // drag a tray card onto the timeline: planned where it is dropped; dropped outside: nothing
+  const trayRow = text => withClass(page(), 'chm-row').find(n => label(withClass(n, 'chm-row-title')[0]) === text)
+  const loose = VIEW.tray.find(i => i.can.move)
+  restCalls.length = 0
+  trayRow(loose.short).props.onPointerDown({ button: 0, clientX: 300 })
+  fire('pointermove', { clientX: 20 })
+  fire('pointerup', { clientX: 20 })
+  await settle()
+  out.dropOutside = restCalls.length
+  const dropTs = VIEW.horizon.end - 6 * 3600
+  const dropX = 100 + 132 + (dropTs - VIEW.horizon.start) * scale
+  trayRow(loose.short).props.onPointerDown({ button: 0, clientX: 300 })
+  fire('pointermove', { clientX: dropX })
+  out.dropDuring = withClass(page(), 'chm-guide-label').map(label)
+  fire('pointerup', { clientX: dropX })
+  await settle()
+  out.drop = { calls: restCalls.filter(c => !c.path.startsWith('/plan')), id: loose.task_id, near: dropTs }
+  const stuck = VIEW.tray.find(i => !i.can.move)
+  restCalls.length = 0
+  trayRow(stuck.short).props.onPointerDown({ button: 0, clientX: 300 })
+  fire('pointermove', { clientX: dropX })
+  fire('pointerup', { clientX: dropX })
+  out.dropTriage = restCalls.length
+
+  // a tray card in the scroll: a Plan form and no Unplan
+  trayRow(loose.short).props.onClick()
+  out.trayScroll = { buttons: nodes(withClass(page(), 'chm-card')[0], 'Button').map(label), inputs: nodes(withClass(page(), 'chm-card')[0], 'input').map(n => n.props.value) }
+
+  // the horizon switch asks for another view and remembers it
+  G.slots = []
+  G.queryOptions.length = 0
+  tree = page()
+  nodes(withClass(tree, 'chm-seg')[0], 'button').find(b => label(b) === 'Week').props.onClick()
+  page()
+  out.horizon = { keys: [...new Set(G.queryOptions.map(o => JSON.stringify(o.queryKey)))], stored, poll: [...new Set(G.queryOptions.map(o => o.refetchInterval))] }
+
+  // filters: a hidden profile loses its lane; a label dims the rest; clashes only
+  G.slots = []
+  const chip = text => withClass(page(), 'chm-chip').find(n => label(n) === text)
+  chip('scribe').props.onClick()
+  out.filterProfile = { lanes: withClass(page(), 'chm-lane-name').map(label), tray: withClass(page(), 'chm-row').length }
+  chip('scribe').props.onClick()
+  chip('db:main').props.onClick()
+  out.filterLabel = bars(page()).filter(b => b.props['data-dim'] === '0').map(b => b.props['aria-label'].split(',')[0])
+  chip('db:main').props.onClick()
+  chip('Clashes only').props.onClick()
+  out.filterClashes = bars(page()).filter(b => b.props['data-dim'] === '0').length
+  out.clear = withClass(page(), 'chm-plain').map(label).includes('Clear filters')
+
+  // narrow: a list, no loom
+  G.slots = []
+  G.viewport = { width: 390, height: 800, narrow: true }
+  tree = page()
+  out.narrow = { loom: withClass(tree, 'chm-loom').length, rows: withClass(withClass(tree, 'chm-agenda')[0], 'chm-row').length,
+                 days: nodes(withClass(tree, 'chm-agenda')[0], 'h3').map(label), hint: texts(tree).some(x => x.startsWith('Drag a slot')) }
+  G.viewport = { width: 1400, height: 900, narrow: false }
+  G.slots = []
+
+  // the edges: loading, an error, a stale plan, a board that cannot be read, an empty plan
+  setQuery(undefined)
+  out.loading = texts(page())
+  setQuery(undefined, { isError: true, error: new Error('404: {"detail":"Plugin not found"}') })
+  out.loadError = nodes(page(), 'ErrorState').map(n => ({ title: n.props.title, description: n.props.description }))
+  setQuery(DATA, { isError: true })
+  out.stale = withClass(page(), 'chm-notice').map(label)
+  setQuery({ ...DATA, board_error: 'kanban_list failed (RuntimeError).' })
+  out.boardDown = withClass(page(), 'chm-notice').map(label)
+  setQuery({ ...DATA, items: [], tray: [], lanes: [], log: [], labels: [], later: { count: 0, text: '' },
+             counts: { clashes: 0, busy: 0, planned: 0, running: 0, attention: 0, tray: 0 },
+             summary: { headline: 'Nothing is planned.', facts: [], chip: 'no slots', tip: 'Nothing is planned.' } })
+  out.empty = { texts: texts(page()), bars: bars(page()).length }
+
+  // status-bar chip and palette
+  setQuery(DATA)
+  const chipTree = () => { G.hook = 0; return byId('chip').render() }
+  out.chip = { tip: chipTree().props.label, text: label(chipTree()), icon: nodes(chipTree(), 'Codicon')[0].props.name }
+  nodes(chipTree(), 'button')[0].props.onClick()
   byId('open').data.run()
   out.navigations = G.host.navigations.slice()
-  const emit = data => G.cacheListeners.forEach(fn => fn({ type: 'updated', query: { queryKey: [plugin.id, 'windows'], state: { data } } }))
-  const before = contributions.length
-  emit({ ...DATA, skew: 0 })
-  emit({ ...DATA, skew: 0 })
-  out.badgeRegistrations = contributions.length - before
-  G.cacheListeners.forEach(fn => fn({ type: 'updated', query: { queryKey: ['other-plugin', 'windows'], state: { data: { windows: [] } } } }))
-  G.cacheListeners.forEach(fn => fn({ type: 'observerAdded', query: { queryKey: [plugin.id, 'windows'], state: {} } }))
-  const decorate = byId('window').data.decorate
-  out.badgeArea = byId('window').area
-  out.badges = Object.fromEntries(['t_pending', 't_next', 't_open', 't_both', 't_done', 't_unknown'].map(id =>
-    [id, decorate({ id, status: 'ready', tenant: null, assignee: null }, { tenants: [] })]))
-  emit({ ...DATA, windows: [], skew: 0 })
-  out.badgesAfterEmpty = byId('window').data.decorate({ id: 't_open' }, { tenants: [] })
-  out.disposers = disposers.length
+  setQuery(undefined)
+  out.chipLoading = chipTree()
   out.missingKeys = [...new Set(missing)]
 } finally {
   rmSync(dir, { recursive: true, force: true })

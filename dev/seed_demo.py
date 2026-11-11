@@ -188,7 +188,7 @@ class Clock:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--plan-db", required=True, type=Path, help="the plugin's plan.db (in its plugin data directory)")
     parser.add_argument("--timezone", default="", help="IANA zone for the times in the log (default: the system zone)")
     parser.add_argument("--board", default="", help="board slug (default: the active board)")
@@ -198,11 +198,7 @@ def main() -> int:
     if not kanban_db:
         sys.exit("seed_demo: set HERMES_KANBAN_DB to the demo board's database (dev/scratch-env.sh does). "
                  "This script writes cards and never guesses which board you mean.")
-    try:
-        import hermes_bootstrap  # noqa: F401  (the installed core sets its import paths here)
-    except ImportError:
-        pass
-    import tools.kanban_tools  # noqa: F401  (registers kanban_* in the registry)
+    import tools.kanban_tools  # noqa: F401  (registers kanban_* in the tool registry; run with a Hermes core's Python)
     from tools.registry import registry
 
     def dispatch(tool: str, tool_args: dict) -> Any:

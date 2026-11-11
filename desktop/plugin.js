@@ -1,38 +1,41 @@
 /**
- * change-windows: the Hermes Desktop half.
+ * chronomancer: the Hermes Desktop half.
  *
- * One question on every surface: is the door open now, and until when?
+ * One question on every surface: what runs next, and where does it clash?
  *
- * - Page `/change-windows` with a sidebar row:
- *     the door      one large sentence with a lock glyph (closed / open with time left / next);
- *     the runway    today and tomorrow as an SVG timeline (a vertical ladder when narrow): approved
- *                   windows solid, proposals hatched, overlaps as a warning band, night shaded, a
- *                   "now" needle. Focus or hover reads a bar out; a click jumps to its card;
- *     window cards  name, scope, local time and relative time, proposer, linked Kanban cards, a
- *                   decision stamp, and each overlap as a button that opens a conflict panel;
- *     the ledger    decisions and matched calls (metadata only) as one quiet log.
- *   Approve / Decline / Close now, each behind a confirm dialog and an idempotency key.
- * - Status-bar chip and Kanban card badges, in the door's words.
- * - Palette command that opens the page.
+ * - Page `/chronomancer` with a sidebar row:
+ *     the astrolabe  the plugin's clock, the headline (what runs next) and the horizon switch
+ *                    (day, 2 days, week);
+ *     the loom       a timeline with one lane per profile. A slot is a bar: outlined while planned,
+ *                    dashed once released, shimmering while its card runs, faded when done. A clash
+ *                    is hatched on both bars. Night is a starred band; "now" is a glowing needle.
+ *                    Drag a bar to move its slot, or drag a card from the tray onto the loom;
+ *     the scroll     the selected card: its state in one sentence, its clashes, its labels, and the
+ *                    moves (cast now, move, pin, unplan);
+ *     the tray       the open cards that have no slot;
+ *     the chronicle  who changed what in the plan: you, the orchestrator, or the timer.
+ * - Status-bar chip and palette command.
  *
  * Plain ESM, loaded uncompiled: jsx() calls, no JSX. Imports only @hermes/plugin-sdk, react and
- * react/jsx-runtime. Data comes from the plugin's own backend (dashboard/plugin_api.py) by
- * polling; no socket. Layout is inline styles on the app's theme variables, because an uncompiled
- * plugin cannot add utility classes to the app's stylesheet. Colour never carries meaning alone:
- * every state also has a word, a glyph or a pattern.
+ * react/jsx-runtime. Data comes from the plugin's own backend (dashboard/plugin_api.py) by polling.
+ * Every sentence about the plan (the headline, a card's state, a clash, a log entry, the result of
+ * a move) is written by the backend; this file lays them out and owns only labels and buttons.
+ * Colour comes from the app's theme variables and never carries meaning alone: every state also
+ * has a word, a glyph or a pattern. Motion stops under "reduce motion".
  */
 
-import {
+import * as SDK from '@hermes/plugin-sdk'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { jsx, jsxs } from 'react/jsx-runtime'
+
+const {
   atom,
   Badge,
   Button,
   Codicon,
   ConfirmDialog,
-  CopyButton,
-  EmptyState,
   ErrorState,
   host,
-  KANBAN_CARD_AREAS,
   PALETTE_AREA,
   queryClient,
   ROUTES_AREA,
@@ -42,235 +45,132 @@ import {
   usePluginI18n,
   useQuery,
   useValue
-} from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
-import { jsx, jsxs } from 'react/jsx-runtime'
+} = SDK
 
-const ID = 'change-windows'
-const PATH = '/change-windows'
+const ID = 'chronomancer'
+const PATH = '/chronomancer'
 const BOARD_PATH = '/kanban'
-const POLL_MS = 7000
-const WINDOWS_KEY = [ID, 'windows']
-const AUDIT_KEY = [ID, 'audit']
+const POLL_MS = 5000
+const SNAP_S = 900
+const HORIZONS = ['day', '2d', 'week']
+const LANE_W = 132 // px: the column with the profile names
+const HEAD_H = 46 // px: the day and hour labels above the lanes
+const ROW_H = 30
+const ROW_GAP = 6
+const LANE_PAD = 9
+const MIN_BAR = 10
+const INSIDE = 150 // px: a body at least this wide carries its title inside
+const TAG = { day: 260, '2d': 200, week: 130 } // px: the most room a title beside a body may take
 
 const EN = {
-  title: 'Change windows',
-  subtitle: 'Approved time windows for production changes by agents.',
-  open: 'Open change windows',
-  loading: 'Loading change windows…',
-  loadFailed: 'Change windows are unavailable',
+  title: 'Chronomancer',
+  subtitle: 'One plan for the Kanban cards of every profile.',
+  open: 'Open Chronomancer',
+  loading: 'Reading the plan…',
+  loadFailed: 'The plan is unavailable',
   loadFailedHint:
-    'The plugin backend did not answer. Enable the change-windows plugin for this profile and restart the gateway.',
-  stale: 'Could not refresh. Showing the last data received.',
+    'The plugin backend did not answer. Enable the chronomancer plugin for this profile and restart the gateway.',
+  stale: 'Could not refresh. Showing the last plan received.',
   retry: 'Retry',
-  empty: 'No change windows',
-  emptyHint: 'Nothing from today to seven days ahead. Agents propose windows; you approve them.',
-  approvalOff: 'Desktop approval is off (approval.desktop: false). Approve or decline in Telegram.',
-  trust: 'Approving here trusts this Desktop session. Set approval.desktop: false for Telegram-only approval.',
-  door: {
-    label: 'Door',
-    closed: 'Closed: production writes are blocked',
-    warn: 'Warn mode: production writes are recorded, not blocked',
-    off: 'Guard off: production writes are not checked',
-    open: (name, d) => `Open: ${name}, ${d} left`,
-    openSub: (scope, until) => `Matched writes in scope ${scope} are allowed until ${until}. Other scopes stay blocked.`,
-    more: n => (n === 1 ? '1 more window is open.' : `${n} more windows are open.`),
-    next: (at, name) => `Next: ${at} ${name} (approved)`,
-    nextIn: d => `in ${d}`,
-    none: 'No approved window ahead.',
-    waiting: n => (n === 1 ? '1 proposal waits for your decision.' : `${n} proposals wait for your decision.`)
+  failed: 'The move failed.',
+  boardDown: 'The Kanban board cannot be read',
+  horizon: { label: 'Horizon', day: 'Day', '2d': '2 days', week: 'Week' },
+  now: at => `now ${at}`,
+  noProfile: 'No profile',
+  loom: {
+    title: 'Timeline',
+    label: 'Timeline of slots, one lane per profile',
+    empty: 'Nothing is planned in this horizon.',
+    hint: 'Drag a slot to move it. Drag a card from Unplanned onto the timeline to plan it.',
+    moveTo: at => `Move to ${at}`,
+    planAt: at => `Plan at ${at}`,
+    bar: parts => parts.filter(Boolean).join(', ')
   },
-  runway: {
-    label: 'Runway: change windows today and tomorrow',
-    today: day => (day ? `Today · ${day}` : 'Today'),
-    tomorrow: day => (day ? `Tomorrow · ${day}` : 'Tomorrow'),
-    now: at => `now ${at}`,
-    night: 'night',
-    bar: (name, state, span, rel) => [name, state, span, rel].filter(Boolean).join(', '),
-    hint: 'Focus or hover a bar to read it. Select it to jump to its card.',
-    readout: parts => parts.filter(Boolean).join(' · '),
-    legend: {
-      approved: 'approved',
-      pending: 'proposed',
-      open: 'open now',
-      past: 'ended',
-      overlap: 'overlap',
-      night: 'night',
-      now: 'now'
-    }
+  tray: {
+    title: 'Unplanned',
+    empty: 'Every open card has a slot.',
+    hint: 'Cards without a slot. Drag one onto the timeline.'
   },
-  group: {
-    open: 'Open now',
-    pending: 'Waiting for your decision',
-    approved: 'Approved',
-    finished: 'Closed, expired or declined'
+  scroll: {
+    title: 'Selected card',
+    none: 'Select a slot or a card to see it here.',
+    start: 'Start',
+    estimate: 'Estimate (minutes)',
+    labels: 'Labels',
+    noLabels: 'No labels',
+    addLabel: 'Add a label, for example repo:web',
+    clashes: 'Clashes',
+    board: 'Open the board',
+    card: id => `card ${id}`
   },
-  state: {
-    pending: 'pending',
-    approved: 'approved',
-    open: 'open',
-    waiting: 'approved, waiting for check-in',
-    ended: 'ended',
-    expired: 'expired',
-    closed: 'closed',
-    declined: 'declined',
-    cancelled: 'withdrawn'
+  action: {
+    now: 'Cast now',
+    save: 'Move',
+    plan: 'Plan',
+    pin: 'Pin',
+    unpin: 'Unpin',
+    clear: 'Unplan',
+    earlier: '15 min earlier',
+    later: '15 min later',
+    nextFree: at => `Next free start: ${at}`,
+    add: 'Add',
+    remove: name => `Remove the label ${name}`,
+    close: 'Close'
   },
-  exclusive: 'exclusive',
-  shared: 'shared (other windows may overlap)',
-  scope: scope => `scope ${scope}`,
-  copyId: 'Copy the window id',
-  card: {
-    open: id => `Open the Kanban board (card ${id})`,
-    detail: (title, status, assignee) => [title, status, assignee].filter(Boolean).join(' · ')
-  },
-  via: { telegram: 'Telegram', miniapp: 'the Mini App', desktop: 'Hermes Desktop' },
-  stamp: {
-    approved: (channel, at) => (channel ? `Approved in ${channel}, ${at}` : `Approved, ${at}`),
-    declined: (channel, at) => (channel ? `Declined in ${channel}, ${at}` : `Declined, ${at}`),
-    closed: at => (at ? `Closed ${at}` : 'Closed'),
-    cancelled: at => (at ? `Withdrawn ${at}` : 'Withdrawn'),
-    pending: 'Awaiting your decision',
-    expired: 'Expired without a decision'
-  },
-  time: {
-    startsIn: d => `starts in ${d}`,
-    left: d => `${d} left`,
-    endedAgo: d => `ended ${d} ago`
-  },
-  dur: {
-    soon: 'under a minute',
-    minutes: m => `${m} min`,
-    hours: (h, m) => (m ? `${h} h ${m} min` : `${h} h`),
-    days: (d, h) => (h ? `${d} d ${h} h` : `${d} d`)
-  },
-  overlap: {
-    // The explanation itself (label, title, rows) is written by the backend: change_windows/overlaps.py
-    show: name => `Show '${name}'`,
-    dismiss: 'Close explanation'
-  },
-  action: { approve: 'Approve', decline: 'Decline', close: 'Close now' },
   confirm: {
-    approveTitle: name => `Approve "${name}"?`,
-    approveBody: (scope, span) =>
-      `Matched production writes in scope ${scope} are allowed during ${span}. Linked cards are released when it opens.`,
-    declineTitle: name => `Decline "${name}"?`,
-    declineBody: 'The proposal is closed. The agent has to propose a new window.',
-    closeTitle: name => `Close "${name}" now?`,
-    closeBody: scope => `Matched production writes in scope ${scope} are blocked again at once.`
+    nowTitle: 'Cast now?',
+    nowBody: title => `"${title}" is released at once and its slot moves to now.`,
+    nowAction: 'Cast now'
   },
-  done: { approve: 'Window approved.', decline: 'Window declined.', close: 'Window closed.' },
-  failed: 'The action failed. Check the window list and retry.',
-  ledger: {
-    title: 'Ledger',
-    hint: 'Decisions and matched calls, newest first. Last 20 of each · metadata only',
-    empty: 'Nothing recorded yet.',
-    decision: (verdict, channel) => (channel ? `${verdict} in ${channel}` : verdict),
-    closedLater: 'closed later',
-    by: who => `by ${who}`,
-    row: parts => parts.filter(Boolean).join(' · ')
+  chronicle: { title: 'Changes', empty: 'No changes yet.' },
+  filter: {
+    label: 'Filters',
+    clashes: 'Clashes only',
+    oneAtATime: 'one card at a time',
+    clear: 'Clear filters'
   },
-  chip: {
-    closed: 'closed',
-    warn: 'warn only',
-    off: 'guard off',
-    open: d => `open, ${d}`,
-    more: n => ` +${n}`,
-    next: at => `next ${at}`,
-    tip: sentence => `Change windows. ${sentence}`
+  phase: {
+    planned: 'planned',
+    due: 'due',
+    waiting: 'released',
+    running: 'running',
+    done: 'done',
+    missed: 'missed',
+    failed: 'not released',
+    gone: 'gone',
+    unplanned: 'unplanned'
   },
-  badge: {
-    open: d => `window open, ${d}`,
-    approved: at => `next ${at}`,
-    waiting: 'check-in needed',
-    pending: at => `pending ${at}`,
-    pendingNow: 'pending decision',
-    ended: 'window ended',
-    closed: 'window closed',
-    declined: 'window declined',
-    cancelled: 'window withdrawn',
-    expired: 'proposal expired'
-  }
+  mark: { pinned: 'pinned by you', clash: 'clash', busy: 'busy', over: 'over its estimate' },
+  chipTip: tip => `Chronomancer. ${tip}`
 }
 
-// Set in register(): the plugin's REST door and its non-React translator.
+// Set in register(): the plugin's REST door and its storage.
 let rest = null
+let storage = null
 
 // ── data ────────────────────────────────────────────────────────────────────
 
-async function fetchWindows() {
-  const data = await rest('/windows')
+const planKey = horizon => [ID, 'plan', horizon]
+
+async function fetchPlan(horizon) {
+  const data = await rest(`/plan?horizon=${encodeURIComponent(horizon)}`)
+
   // Times are compared on the server's clock: keep the offset to this machine's clock.
   return { ...data, skew: (Number(data.now) || 0) - Date.now() / 1000 }
 }
 
-const fetchAudit = () => rest('/audit')
 const nowOf = data => Math.floor(Date.now() / 1000 + ((data && data.skew) || 0))
 
-function useWindows() {
-  return useQuery({ queryKey: WINDOWS_KEY, queryFn: fetchWindows, refetchInterval: POLL_MS })
+function usePlan(horizon) {
+  return useQuery({
+    queryKey: planKey(horizon),
+    queryFn: () => fetchPlan(horizon),
+    refetchInterval: POLL_MS,
+    placeholderData: previous => previous
+  })
 }
 
-/** What the window is right now, from its stored state and the clock. */
-function phase(w, now) {
-  if (w.state === 'pending') {
-    return w.end_ts <= now ? 'expired' : 'pending'
-  }
-
-  if (w.state === 'approved' && w.closed_at == null) {
-    if (w.open) {
-      return 'open'
-    }
-
-    if (w.end_ts <= now) {
-      return 'ended'
-    }
-
-    return w.start_ts <= now ? 'waiting' : 'approved'
-  }
-
-  return w.state
-}
-
-const GROUP_OF = { pending: 'pending', approved: 'approved', waiting: 'approved', open: 'open' }
-const GROUPS = ['open', 'pending', 'approved', 'finished']
-const groupOf = p => GROUP_OF[p] || 'finished'
-
-function duration(t, seconds) {
-  const s = Math.max(0, Math.floor(seconds))
-
-  if (s < 60) {
-    return t('dur.soon')
-  }
-
-  const minutes = Math.floor(s / 60)
-
-  if (minutes < 60) {
-    return t('dur.minutes', minutes)
-  }
-
-  const hours = Math.floor(minutes / 60)
-
-  return hours < 48 ? t('dur.hours', hours, minutes % 60) : t('dur.days', Math.floor(hours / 24), hours % 24)
-}
-
-function relative(t, w, p, now) {
-  if (p === 'open') {
-    return t('time.left', duration(t, w.end_ts - now))
-  }
-
-  if (p === 'approved' || p === 'pending') {
-    return w.start_ts > now ? t('time.startsIn', duration(t, w.start_ts - now)) : t('time.left', duration(t, w.end_ts - now))
-  }
-
-  if (p === 'ended' || p === 'expired') {
-    return t('time.endedAgo', duration(t, now - w.end_ts))
-  }
-
-  return ''
-}
-
-/** The server's message from a failed ctx.rest call (`… 409: {"detail":"…"}`), else a fallback. */
+/** The backend's sentence from a failed request ("409: {"detail": "..."}"), else the fallback. */
 function errorText(error, fallback) {
   const match = /(\d{3}):\s*(\{[\s\S]*\})\s*$/.exec(String((error && error.message) || ''))
 
@@ -290,936 +190,931 @@ function errorText(error, fallback) {
   return fallback
 }
 
-function newKey() {
-  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID()
-  }
+const card = id => `/cards/${encodeURIComponent(id)}`
 
-  let key = ''
-
-  while (key.length < 32) {
-    key += Math.floor(Math.random() * 16).toString(16)
-  }
-
-  return key
+const api = {
+  slot: (id, body) => rest(`${card(id)}/slot`, { method: 'POST', body }),
+  now: id => rest(`${card(id)}/now`, { method: 'POST' }),
+  clear: id => rest(`${card(id)}/slot`, { method: 'DELETE' }),
+  pin: (id, pinned) => rest(`${card(id)}/pin`, { method: 'POST', body: { pinned } }),
+  tag: (id, add, remove) => rest(`${card(id)}/labels`, { method: 'POST', body: { add, remove } })
 }
 
-function parseList(value) {
-  if (Array.isArray(value)) {
-    return value
-  }
+/** Run one move, say what the backend said, and read the plan again. True when it went through. */
+async function move(call, fallback) {
+  let ok = true
 
   try {
-    const parsed = JSON.parse(value)
+    const out = await call()
+    const change = out && out.change
 
-    return Array.isArray(parsed) ? parsed : []
+    if (change && change.message) {
+      host.notify({ kind: change.clashes && change.clashes.length ? 'warning' : 'success', message: change.message })
+    }
+  } catch (error) {
+    ok = false
+    host.notify({ kind: 'error', message: errorText(error, fallback) })
+  }
+
+  await queryClient.invalidateQueries({ queryKey: [ID] })
+
+  return ok
+}
+
+// ── time and geometry ───────────────────────────────────────────────────────
+
+const pad = n => String(n).padStart(2, '0')
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+/** ts → "Wed 14:15" in the plugin's time zone (the zone of every time the backend writes). */
+function clockOf(data) {
+  let format = null
+
+  try {
+    if (data.tz) {
+      format = new Intl.DateTimeFormat('en-GB', { timeZone: data.tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
+    }
   } catch {
-    return []
-  }
-}
-
-/** Fallback for a backend that sends no formatted moment: the app's own locale and zone. */
-const clock = ts => new Date(ts * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-
-// ── days and clock times (the plugin's time zone, as the backend sends it) ──
-
-/** Today and tomorrow, midnight to midnight. An older backend sends only `start` (today's midnight). */
-function daysOf(data) {
-  if (data && Array.isArray(data.days) && data.days.length) {
-    return data.days
+    format = null
   }
 
-  const start = Number(data && data.start)
-
-  return start ? [0, 1].map(i => ({ start: start + i * 86400, end: start + (i + 1) * 86400, label: '' })) : []
-}
-
-const two = n => String(n).padStart(2, '0')
-
-/** `14:05` for a moment inside `day`. */
-function hm(day, ts) {
-  const minutes = Math.floor((((ts - day.start) / (day.end - day.start)) * 1440))
-  const clamped = Math.max(0, Math.min(1440, minutes))
-
-  return `${two(Math.floor(clamped / 60) % 24)}:${two(clamped % 60)}`
-}
-
-/** A backend moment (`Tue 10 Nov 14:00`) without the day when the day is today. */
-function short(when, data) {
-  const today = daysOf(data)[0]
-  const prefix = today && today.label ? `${today.label} ` : ''
-
-  return prefix && String(when).startsWith(prefix) ? String(when).slice(prefix.length) : String(when || '')
-}
-
-/** When a window starts, as the door says it: `14:00` today, `Wed 11 Nov 09:00` later. */
-const startOf = (w, data) => (w.starts ? short(w.starts, data) : clock(w.start_ts))
-
-// ── styles (theme variables only) ───────────────────────────────────────────
-
-const C = {
-  primary: 'var(--ui-text-primary)',
-  secondary: 'var(--ui-text-secondary)',
-  stroke: 'var(--ui-stroke-secondary)',
-  accent: 'var(--ui-accent)',
-  green: 'var(--ui-green)',
-  yellow: 'var(--ui-yellow)',
-  red: 'var(--ui-red)',
-  hatch: 'url(#cw-hatch)',
-  hatchWarn: 'url(#cw-hatch-warn)',
-  none: 'none',
-  clear: 'transparent'
-}
-
-const MONO = 'var(--dt-font-mono, ui-monospace, monospace)'
-
-const S = {
-  page: { height: '100%', overflowY: 'auto', color: C.primary },
-  inner: { maxWidth: '72rem', margin: '0 auto', padding: '1.25rem 1rem 3rem', display: 'grid', gap: '1.5rem' },
-  h1: { fontSize: '0.8125rem', fontWeight: 600, margin: 0, color: C.primary },
-  h2: { fontSize: '0.875rem', fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' },
-  hint: { fontSize: '0.8125rem', color: C.primary, margin: 0 },
-  notice: { fontSize: '0.8125rem', color: C.primary, border: `1px solid ${C.stroke}`, borderRadius: '8px', padding: '0.625rem 0.75rem' },
-  section: { display: 'grid', gap: '0.625rem' },
-  hero: { border: `1px solid ${C.stroke}`, borderRadius: '12px', padding: '1rem', display: 'grid', gap: '1rem', minWidth: 0 },
-  door: { display: 'flex', alignItems: 'flex-start', gap: '0.875rem', minWidth: 0 },
-  doorGlyph: {
-    flex: '0 0 auto',
-    width: '3rem',
-    height: '3rem',
-    borderRadius: '12px',
-    display: 'grid',
-    placeItems: 'center'
-  },
-  doorTone: {
-    open: { color: C.green, border: `2px solid ${C.green}` },
-    closed: { color: C.secondary, border: `2px solid ${C.secondary}` },
-    warn: { color: C.primary, border: `2px dashed ${C.primary}` }
-  },
-  doorText: { display: 'grid', gap: '0.25rem', minWidth: 0 },
-  doorTitle: { fontSize: 'clamp(1.125rem, 0.75rem + 2vw, 1.5rem)', lineHeight: 1.2, fontWeight: 650, letterSpacing: '-0.01em', margin: 0, overflowWrap: 'anywhere' },
-  doorSub: { fontSize: '0.875rem', color: C.primary, margin: 0, overflowWrap: 'anywhere' },
-  runway: { display: 'grid', gap: '0.375rem', minWidth: 0 },
-  svg: { display: 'block', width: '100%', height: 'auto', overflow: 'visible' },
-  readout: { fontSize: '0.75rem', color: C.primary, minHeight: '1.125rem', margin: 0, overflowWrap: 'anywhere' },
-  legend: { display: 'flex', flexWrap: 'wrap', gap: '0.25rem 0.875rem', fontSize: '0.6875rem', color: C.primary, margin: 0, padding: 0, listStyle: 'none' },
-  legendItem: { display: 'inline-flex', alignItems: 'center', gap: '0.3125rem' },
-  cards: { display: 'grid', gap: '0.75rem', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 24rem), 1fr))', alignItems: 'start' },
-  card: { border: `1px solid ${C.stroke}`, borderRadius: '10px', padding: '0.875rem', display: 'grid', gap: '0.5rem', minWidth: 0, outline: 'none' },
-  cardLit: { border: `1px solid ${C.primary}`, boxShadow: `0 0 0 1px ${C.primary}` },
-  cardWide: { gridColumn: '1 / -1' },
-  row: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.375rem', minWidth: 0 },
-  head: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem', minWidth: 0 },
-  name: { fontSize: '0.9375rem', fontWeight: 600, overflowWrap: 'anywhere', flex: '1 1 8rem', minWidth: 0 },
-  meta: { fontSize: '0.8125rem', color: C.primary, overflowWrap: 'anywhere' },
-  small: { fontSize: '0.75rem', color: C.primary, overflowWrap: 'anywhere' },
-  id: { fontFamily: MONO, fontSize: '0.6875rem', color: C.primary, userSelect: 'all' },
-  reason: { fontSize: '0.8125rem', color: C.primary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
-  foot: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.625rem', marginTop: '0.125rem' },
-  actions: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' },
-  stamp: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '0.375rem',
-    padding: '0.25rem 0.5rem',
-    border: `3px double ${C.secondary}`,
-    borderRadius: '4px',
-    color: C.primary,
-    fontFamily: MONO,
-    fontSize: '0.6875rem',
-    lineHeight: 1.3,
-    letterSpacing: '0.05em',
-    textTransform: 'uppercase',
-    transform: 'rotate(-1.5deg)',
-    overflowWrap: 'anywhere'
-  },
-  stampIdle: { border: `1px dashed ${C.secondary}`, transform: 'none' },
-  link: {
-    display: 'inline-flex',
-    alignItems: 'baseline',
-    gap: '0.375rem',
-    maxWidth: '100%',
-    padding: '0.1875rem 0.4375rem',
-    border: `1px solid ${C.secondary}`,
-    borderRadius: '4px',
-    background: C.clear,
-    color: C.primary,
-    font: 'inherit',
-    fontSize: '0.75rem',
-    lineHeight: 1.35,
-    textAlign: 'left',
-    cursor: 'pointer',
-    overflowWrap: 'anywhere'
-  },
-  overlapChip: { borderStyle: 'dashed' },
-  panel: { border: `1px solid ${C.secondary}`, borderLeft: `4px solid ${C.yellow}`, borderRadius: '8px', padding: '0.75rem', display: 'grid', gap: '0.625rem', minWidth: 0 },
-  panelTitle: { fontSize: '0.875rem', fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', gap: '0.375rem', overflowWrap: 'anywhere' },
-  facts: { display: 'grid', gridTemplateColumns: 'minmax(5.5rem, max-content) 1fr', gap: '0.3125rem 0.75rem', margin: 0, fontSize: '0.8125rem' },
-  term: { color: C.primary, margin: 0 },
-  fact: { margin: 0, color: C.primary, overflowWrap: 'anywhere', minWidth: 0 },
-  ledger: { listStyle: 'none', margin: 0, padding: '0.375rem 0 0', display: 'grid', borderTop: `1px solid ${C.stroke}` },
-  entry: { display: 'flex', alignItems: 'baseline', gap: '0.625rem', padding: '0.25rem 0', fontSize: '0.75rem', minWidth: 0 },
-  moment: { flex: '0 0 auto', width: '21ch', fontFamily: MONO, color: C.primary, whiteSpace: 'nowrap' },
-  glyph: { flex: '0 0 auto', width: '1rem', textAlign: 'center' },
-  glyphTone: { blocked: { color: C.red }, warned: { color: C.yellow }, allowed: { color: C.green }, plain: { color: C.primary } },
-  line: { flex: '1 1 auto', minWidth: 0, color: C.primary, overflowWrap: 'anywhere' },
-  chip: { display: 'inline-flex', alignItems: 'center', gap: '0.25rem', height: '100%', padding: '0 0.375rem', fontSize: '0.6875rem', color: C.primary, background: C.clear, border: 0, cursor: 'pointer', whiteSpace: 'nowrap' }
-}
-
-/** jsx() for one child, jsxs() for several: the calls an uncompiled plugin writes by hand. */
-const el = (type, props, ...children) =>
-  children.length > 1 ? jsxs(type, { ...props, children }) : jsx(type, { ...props, children: children[0] })
-
-const BADGE_VARIANT = { open: 'success', pending: 'warn', approved: 'default', waiting: 'warn' }
-
-function StateBadge({ p }) {
-  const t = usePluginI18n(ID)
-
-  return jsx(Badge, { variant: BADGE_VARIANT[p] || 'muted', children: t(`state.${p}`) })
-}
-
-// ── the door ────────────────────────────────────────────────────────────────
-
-/** The open window that ends first (and how many more are open), else the next approved one. */
-function headline(data) {
-  const now = nowOf(data)
-  const rows = (data && data.windows) || []
-  const open = rows.filter(w => phase(w, now) === 'open').sort((a, b) => a.end_ts - b.end_ts)
-
-  if (open.length) {
-    return { kind: 'open', w: open[0], more: open.length - 1, seconds: open[0].end_ts - now }
-  }
-
-  const next = rows.filter(w => phase(w, now) === 'approved').sort((a, b) => a.start_ts - b.start_ts)[0]
-
-  return next ? { kind: 'next', w: next, more: 0, seconds: next.start_ts - now } : { kind: 'closed', w: null, more: 0, seconds: 0 }
-}
-
-const guardMode = data => (data && (data.mode === 'warn' || data.mode === 'off') ? data.mode : 'enforce')
-
-/** The door as words: one sentence, then what follows from it. The chip and its tip reuse this. */
-function doorOf(data, t) {
-  const now = nowOf(data)
-  const head = headline(data)
-  const mode = guardMode(data)
-  const waiting = ((data && data.windows) || []).filter(w => phase(w, now) === 'pending').length
-  const lines = []
-  let title = t(mode === 'enforce' ? 'door.closed' : `door.${mode}`)
-  let tone = mode === 'enforce' ? 'closed' : 'warn'
-  let icon = mode === 'enforce' ? 'lock' : 'warning'
-
-  if (head.kind === 'open') {
-    const today = daysOf(data)[0]
-    const until = !today ? clock(head.w.end_ts) : head.w.end_ts <= today.end ? hm(today, head.w.end_ts) : head.w.span
-
-    if (mode === 'enforce') {
-      title = t('door.open', head.w.name, duration(t, head.seconds))
-      tone = 'open'
-      icon = 'unlock'
+  return ts => {
+    if (format) {
+      return format.format(new Date(ts * 1000)).replace(',', '')
     }
 
-    lines.push(t('door.openSub', head.w.scope, until))
+    const local = new Date((ts + (Number(data.utc_offset_s) || 0)) * 1000)
 
-    if (head.more) {
-      lines.push(t('door.more', head.more))
-    }
-  } else if (head.kind === 'next') {
-    lines.push(`${t('door.next', startOf(head.w, data), head.w.name)}, ${t('door.nextIn', duration(t, head.seconds))}.`)
-  } else {
-    lines.push(t('door.none'))
+    return `${DAYS[local.getUTCDay()]} ${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}`
+  }
+}
+
+const snap = ts => Math.round(ts / SNAP_S) * SNAP_S
+const soonest = now => Math.ceil((now + 60) / SNAP_S) * SNAP_S // the first quarter hour that is still ahead
+
+function hash(text) {
+  let h = 2166136261
+
+  for (let i = 0; i < text.length; i += 1) {
+    h = Math.imul(h ^ text.charCodeAt(i), 16777619)
   }
 
-  if (waiting) {
-    lines.push(t('door.waiting', waiting))
-  }
-
-  return { head, mode, title, tone, icon, lines }
+  return h >>> 0
 }
 
-function Door({ data }) {
-  const t = usePluginI18n(ID)
-  const door = doorOf(data, t)
+const HUES = ['--ui-purple', '--ui-cyan', '--ui-orange', '--ui-blue', '--ui-green', '--ui-yellow']
 
-  return el(
-    'div',
-    { style: S.door, role: 'status', 'aria-label': t('door.label'), 'data-door': door.head.kind, 'data-mode': door.mode },
-    jsx('div', { style: { ...S.doorGlyph, ...S.doorTone[door.tone] }, children: jsx(Codicon, { name: door.icon, size: 24 }) }),
-    el(
-      'div',
-      { style: S.doorText },
-      jsx('p', { style: S.doorTitle, children: door.title }),
-      jsx('p', { style: S.doorSub, children: door.lines.join(' ') })
-    )
-  )
+/** A profile's colour: the app's own colour for it, else one of the theme's hues. */
+function laneColor(profile, index) {
+  const own = typeof SDK.profileColor === 'function' ? SDK.profileColor(profile) : null
+
+  return own || `var(${HUES[index % HUES.length]}, var(--ui-accent))`
 }
 
-// ── the runway ──────────────────────────────────────────────────────────────
-
-const NIGHT = [[0, 6], [22, 24]] // hours of the quiet band
-const DRAWN = { open: 'open', approved: 'approved', waiting: 'approved', pending: 'pending', ended: 'past', closed: 'past' }
-const BAR_PAINT = {
-  open: { fill: C.green, stroke: C.primary, strokeWidth: 2 },
-  approved: { fill: C.secondary, stroke: C.secondary, strokeWidth: 1 },
-  pending: { fill: C.hatch, stroke: C.secondary, strokeWidth: 1.5, strokeDasharray: '4 3' },
-  past: { fill: C.stroke, stroke: C.secondary, strokeWidth: 1 }
-}
-// Opening a window is one short fill of its bar. The app turns transitions off for reduced motion.
-const BAR_MOTION = { transition: 'fill 200ms ease-out, stroke 200ms ease-out' }
-const cut = (text, max) => (text.length > max ? `${text.slice(0, Math.max(1, max - 1)).trimEnd()}…` : text)
-
-/** The windows that have a bar inside `day`, clipped to it, earliest first. */
-function barsOf(data, now, day) {
-  const bars = []
-
-  for (const w of (data && data.windows) || []) {
-    const p = phase(w, now)
-    const kind = DRAWN[p]
-    const end = p === 'closed' && w.closed_at ? Math.min(w.end_ts, w.closed_at) : w.end_ts
-    const from = Math.max(w.start_ts, day.start)
-    const to = Math.min(end, day.end)
-
-    if (kind && to > from) {
-      bars.push({ w, p, kind, from, to })
-    }
-  }
-
-  return bars.sort((a, b) => a.from - b.from || (a.w.id < b.w.id ? -1 : 1))
-}
-
-/** Each overlapping pair once, clipped to `day`. */
-function bandsOf(data, day) {
-  const bands = []
-  const seen = {}
-
-  for (const w of (data && data.windows) || []) {
-    for (const c of w.conflicts || []) {
-      const key = [w.id, c.id].sort().join(':')
-      const from = Math.max(c.start_ts, day.start)
-      const to = Math.min(c.end_ts, day.end)
-
-      if (!seen[key] && to > from) {
-        seen[key] = true
-        bands.push({ key, ids: [w.id, c.id], pair: c.pair || '', note: c.note || '', from, to })
-      }
-    }
-  }
-
-  return bands
-}
-
-/** Greedy lanes: each item takes the first lane that is free at its start. Returns the lane count. */
-function pack(items, extent) {
+/** Bars of one lane, packed into as few rows as fit without overlap. */
+function pack(bars) {
   const ends = []
 
-  for (const item of items) {
-    const [from, to] = extent(item)
-    let lane = ends.findIndex(end => end <= from)
+  for (const bar of bars.sort((a, b) => a.x - b.x || a.item.task_id.localeCompare(b.item.task_id))) {
+    let row = ends.findIndex(end => end + 3 <= bar.x)
 
-    if (lane < 0) {
-      lane = ends.length
-      ends.push(to)
-    } else {
-      ends[lane] = to
+    if (row < 0) {
+      row = ends.length
+      ends.push(0)
     }
 
-    item.lane = lane
+    ends[row] = bar.x + bar.span
+    bar.row = row
   }
 
   return Math.max(1, ends.length)
 }
 
-const text = (props, children) => jsx('text', { ...props, children })
-const svgText = (size, tone, extra) => ({ fontSize: size, fill: C[tone], fontFamily: 'inherit', ...extra })
+/** Where everything sits for a plot of `width` pixels. */
+function layoutOf(data, width, hidden, moved) {
+  const { start, end } = data.horizon
+  const plot = Math.max(240, width - LANE_W)
+  const scale = plot / Math.max(1, end - start)
+  const x = ts => (ts - start) * scale
+  const room = TAG[data.horizon.key] || TAG['2d']
+  const lanes = []
+  let top = HEAD_H
 
-function Defs() {
-  const line = tone => jsx('line', { x1: 0, y1: 0, x2: 0, y2: 6, style: { stroke: C[tone], strokeWidth: 2 } })
+  data.lanes.forEach((lane, index) => {
+    if (hidden.profiles.has(lane.profile)) {
+      return
+    }
+
+    const bars = data.items
+      .filter(item => item.assignee === lane.profile)
+      .map(item => {
+        const shift = moved && moved.id === item.task_id && moved.start !== null ? moved.start - item.start : 0
+        const from = Math.max(0, x(item.start + shift))
+        const w = Math.max(MIN_BAR, Math.min(plot, x(item.end + shift)) - from)
+        // A short body gets its title beside it, as far as the plot has room.
+        const tag = w >= INSIDE ? 0 : Math.max(0, Math.min(room, 22 + item.short.length * 6.4, plot - from - w - 6))
+
+        return { item, shift, x: from, w, tag, span: w + (tag ? 6 + tag : 0), row: 0 }
+      })
+      .filter(bar => bar.x < plot)
+    const rows = pack(bars)
+    const height = LANE_PAD * 2 + rows * ROW_H + (rows - 1) * ROW_GAP
+
+    lanes.push({ ...lane, index, color: laneColor(lane.profile, index), bars, top, height })
+    top += height
+  })
+
+  return { plot, scale, x, lanes, height: Math.max(top, HEAD_H + 60), start, end }
+}
+
+function matches(item, filters) {
+  if (filters.clashes && !item.clash) {
+    return false
+  }
+
+  return !filters.labels.size || item.labels.some(name => filters.labels.has(name))
+}
+
+// ── look ────────────────────────────────────────────────────────────────────
+
+const mix = (color, percent) => `color-mix(in srgb, ${color} ${percent}%, transparent)`
+
+const CSS = `
+.chm { --chm-display: 'Cinzel', 'Cormorant Garamond', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+  --chm-mono: var(--dt-font-mono, ui-monospace, monospace);
+  --chm-ink: var(--ui-text-primary); --chm-soft: var(--ui-text-secondary); --chm-line: var(--ui-stroke-secondary);
+  --chm-glow: ${mix('var(--ui-accent)', 55)}; --chm-veil: ${mix('var(--ui-accent)', 8)};
+  height: 100%; overflow-y: auto; color: var(--chm-ink); }
+.chm-inner { max-width: 92rem; margin: 0 auto; padding: 1.25rem 1.25rem 3rem; display: grid; gap: 1.125rem; }
+.chm h2 { font-family: var(--chm-display); font-size: 0.8125rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+  margin: 0; display: flex; align-items: center; gap: 0.5rem; color: var(--chm-ink); }
+.chm h2::after { content: ''; flex: 1 1 auto; height: 1px; background: linear-gradient(90deg, var(--chm-line), transparent); }
+.chm-p { font-size: 0.8125rem; margin: 0; color: var(--chm-ink); overflow-wrap: anywhere; }
+.chm-quiet { font-size: 0.75rem; margin: 0; color: var(--chm-ink); opacity: 0.86; overflow-wrap: anywhere; }
+.chm-head { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.25rem; padding: 0.875rem 1rem; border-radius: 14px;
+  border: 1px solid var(--chm-line); background: radial-gradient(120% 160% at 0% 0%, var(--chm-veil), transparent 62%); }
+.chm-astro { flex: 0 0 auto; color: var(--ui-accent); filter: drop-shadow(0 0 7px var(--chm-glow)); }
+.chm-spin { transform-origin: center; animation: chm-spin 90s linear infinite; }
+.chm-titles { flex: 1 1 18rem; min-width: 0; display: grid; gap: 0.25rem; }
+.chm-title { font-family: var(--chm-display); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; margin: 0; }
+.chm-headline { font-size: clamp(1.0625rem, 0.8rem + 1vw, 1.375rem); line-height: 1.25; font-weight: 650; margin: 0; overflow-wrap: anywhere; }
+.chm-facts { display: flex; flex-wrap: wrap; gap: 0.375rem; margin: 0; padding: 0; list-style: none; }
+.chm-fact { display: inline-flex; align-items: center; gap: 0.3125rem; font-size: 0.75rem; padding: 0.125rem 0.5rem; border-radius: 999px;
+  border: 1px solid var(--chm-line); }
+.chm-fact[data-kind='clash'] { border-color: var(--ui-red); }
+.chm-fact[data-kind='attention'] { border-color: var(--ui-yellow); border-style: dashed; }
+.chm-side { display: grid; gap: 0.375rem; justify-items: end; }
+.chm-seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: 9px; border: 1px solid var(--chm-line); }
+.chm-seg button, .chm-chip, .chm-plain { font: inherit; color: var(--chm-ink); background: transparent; border: 0; cursor: pointer; }
+.chm-seg button { font-size: 0.75rem; padding: 0.25rem 0.75rem; border-radius: 7px; }
+.chm-seg button[aria-pressed='true'] { background: ${mix('var(--ui-accent)', 22)}; box-shadow: inset 0 0 0 1px var(--ui-accent); font-weight: 600; }
+.chm-seg button:focus-visible, .chm-chip:focus-visible, .chm-plain:focus-visible, .chm-row:focus-visible { outline: 2px solid var(--chm-ink); outline-offset: 2px; }
+.chm-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; }
+.chm-chip { display: inline-flex; align-items: center; gap: 0.3125rem; font-size: 0.75rem; padding: 0.1875rem 0.5625rem; border-radius: 999px;
+  border: 1px solid var(--chm-line); max-width: 100%; }
+.chm-chip[aria-pressed='true'] { border-color: var(--lane, var(--ui-accent)); background: ${mix('var(--lane, var(--ui-accent))', 18)}; }
+.chm-chip[data-off='1'] { opacity: 0.5; text-decoration: line-through; }
+.chm-notice { font-size: 0.8125rem; border: 1px solid var(--chm-line); border-left: 4px solid var(--ui-yellow); border-radius: 8px; padding: 0.5rem 0.75rem; margin: 0; }
+.chm-section { display: grid; gap: 0.5rem; min-width: 0; }
+.chm-loom { position: relative; border: 1px solid var(--chm-line); border-radius: 14px; overflow: hidden; user-select: none;
+  background: linear-gradient(180deg, var(--chm-veil), transparent 38%); }
+.chm-lane { position: absolute; left: 0; right: 0; border-top: 1px solid var(--chm-line); pointer-events: none; }
+.chm-lane-name { position: absolute; left: 0; top: 0; bottom: 0; width: ${LANE_W}px; box-sizing: border-box; display: flex; align-items: center; gap: 0.4375rem;
+  padding: 0 0.625rem; font-size: 0.75rem; font-weight: 600; border-right: 1px solid var(--chm-line);
+  background: linear-gradient(90deg, ${mix('var(--lane)', 14)}, transparent); }
+.chm-lane-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.chm-sigil { flex: 0 0 auto; color: var(--lane, var(--ui-accent)); }
+.chm-tick { position: absolute; top: 24px; bottom: 0; width: 1px; background: var(--chm-line); opacity: 0.45; pointer-events: none; }
+.chm-tick[data-day='1'] { top: 0; opacity: 1; }
+.chm-tick-label { position: absolute; top: 26px; font-size: 0.6875rem; font-family: var(--chm-mono); padding-left: 4px; white-space: nowrap; pointer-events: none; }
+.chm-day-label { position: absolute; top: 5px; font-family: var(--chm-display); font-size: 0.6875rem; letter-spacing: 0.12em; text-transform: uppercase;
+  padding-left: 6px; white-space: nowrap; overflow: hidden; pointer-events: none; }
+.chm-day-label[data-today='1'] { color: var(--ui-accent); font-weight: 700; }
+.chm-night { position: absolute; bottom: 0; background-color: ${mix('var(--chm-ink)', 5)};
+  background-image: radial-gradient(circle at 20% 30%, ${mix('var(--chm-ink)', 45)} 0.6px, transparent 1.2px),
+    radial-gradient(circle at 70% 65%, ${mix('var(--chm-ink)', 32)} 0.5px, transparent 1.1px),
+    radial-gradient(circle at 45% 85%, ${mix('var(--ui-accent)', 55)} 0.6px, transparent 1.3px);
+  background-size: 37px 29px, 53px 41px, 71px 47px; pointer-events: none; }
+.chm-past { position: absolute; bottom: 0; left: ${LANE_W}px; background: ${mix('var(--chm-ink)', 4)}; pointer-events: none; }
+.chm-now { position: absolute; top: 14px; bottom: 0; width: 2px; margin-left: -1px; background: var(--ui-accent);
+  box-shadow: 0 0 10px 1px var(--chm-glow); pointer-events: none; z-index: 4; animation: chm-pulse 2.6s ease-in-out infinite; }
+.chm-now-label { position: absolute; top: 0; transform: translateX(-50%); font-size: 0.625rem; font-family: var(--chm-mono); padding: 1px 6px;
+  border-radius: 999px; color: var(--chm-ink); border: 1px solid var(--ui-accent); background: var(--ui-bg-editor, var(--ui-bg-primary, transparent));
+  white-space: nowrap; z-index: 5; pointer-events: none; }
+.chm-bar { position: absolute; height: ${ROW_H}px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0; border: 0;
+  border-radius: 9px; background: transparent; color: var(--chm-ink); font: inherit; font-size: 0.75rem; line-height: 1; text-align: left;
+  white-space: nowrap; cursor: pointer; touch-action: none; transition: opacity 0.15s ease; animation: chm-rise 0.25s ease both; }
+.chm-bar[data-move='1'] { cursor: grab; }
+.chm-bar:focus-visible { outline: 2px solid var(--chm-ink); outline-offset: 2px; }
+.chm-body { position: relative; flex: 0 0 auto; height: 100%; box-sizing: border-box; border-radius: 9px; border: 1px solid var(--lane);
+  background: ${mix('var(--lane)', 15)}; display: flex; align-items: center; gap: 0.3125rem; padding: 0 0.4375rem; overflow: hidden;
+  transition: box-shadow 0.15s ease; }
+.chm-body[data-thin='1'] { padding: 0; justify-content: center; }
+.chm-body > * { position: relative; z-index: 1; flex: 0 0 auto; }
+.chm-body > .chm-bar-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chm-tag { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 0.25rem; }
+.chm-tag > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chm-bar:hover > .chm-body { box-shadow: 0 0 0 1px var(--lane), 0 0 14px ${mix('var(--lane)', 45)}; }
+.chm-bar[data-phase='waiting'] > .chm-body { border-style: dashed; }
+.chm-bar[data-phase='due'] > .chm-body { animation: chm-pulse 1.4s ease-in-out infinite; }
+.chm-bar[data-phase='running'] > .chm-body { border-width: 2px; background-image: linear-gradient(100deg, ${mix('var(--lane)', 26)} 0%, ${mix('var(--lane)', 58)} 50%, ${mix('var(--lane)', 26)} 100%);
+  background-size: 220% 100%; animation: chm-sheen 3.4s linear infinite; }
+.chm-bar[data-phase='done'] { opacity: 0.6; }
+.chm-bar[data-phase='done'] > .chm-body { background: transparent; }
+.chm-bar[data-phase='missed'] > .chm-body, .chm-bar[data-phase='failed'] > .chm-body, .chm-bar[data-phase='gone'] > .chm-body { border: 1px dashed var(--ui-red); background: ${mix('var(--ui-red)', 8)}; }
+.chm-bar[data-clash='1'] > .chm-body { box-shadow: 0 0 0 1px var(--ui-red), 0 0 12px ${mix('var(--ui-red)', 50)}; }
+.chm-bar[data-partner='1'] > .chm-body { box-shadow: 0 0 0 2px var(--ui-red); }
+.chm-bar[data-sel='1'] { z-index: 3; font-weight: 600; }
+.chm-bar[data-sel='1'] > .chm-body { box-shadow: 0 0 0 2px var(--chm-ink), 0 0 18px var(--chm-glow); }
+.chm-bar[data-dim='1'] { opacity: 0.25; }
+.chm-bar[data-drag='1'] { cursor: grabbing; z-index: 6; transition: none; }
+.chm-bar[data-drag='1'] > .chm-body { box-shadow: 0 6px 22px var(--chm-glow), 0 0 0 2px var(--ui-accent); }
+.chm-body > .chm-hatch { position: absolute; top: 0; bottom: 0; z-index: 0; pointer-events: none;
+  background: repeating-linear-gradient(135deg, ${mix('var(--ui-red)', 60)} 0 4px, transparent 4px 9px); }
+.chm-body > .chm-over { position: absolute; top: 0; bottom: 0; z-index: 0; pointer-events: none; border-left: 2px dotted var(--chm-ink);
+  background: repeating-linear-gradient(90deg, ${mix('var(--ui-yellow)', 50)} 0 3px, transparent 3px 7px); }
+.chm-bar > .chm-spark { position: absolute; top: 50%; width: 5px; height: 5px; margin: -2.5px; border-radius: 50%; background: var(--ui-accent);
+  box-shadow: 0 0 8px 2px var(--chm-glow); pointer-events: none; animation: chm-spark 0.9s ease-out forwards; }
+.chm-guide { position: absolute; top: 14px; bottom: 0; width: 0; border-left: 2px dashed var(--ui-accent); pointer-events: none; z-index: 7; }
+.chm-guide-label { position: absolute; top: 0; left: 6px; font-size: 0.6875rem; font-family: var(--chm-mono); white-space: nowrap; padding: 2px 7px;
+  border-radius: 6px; border: 1px solid var(--ui-accent); background: var(--ui-bg-editor, var(--ui-bg-primary, transparent)); color: var(--chm-ink); }
+.chm-empty { position: absolute; left: ${LANE_W}px; right: 0; margin: 0; text-align: center; font-size: 0.8125rem; pointer-events: none; }
+.chm-two { display: grid; gap: 1.125rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); align-items: start; }
+.chm-card { border: 1px solid var(--chm-line); border-radius: 12px; padding: 0.875rem; display: grid; gap: 0.625rem; min-width: 0; }
+.chm-card[data-lit='1'] { border-color: var(--lane, var(--ui-accent)); box-shadow: 0 0 0 1px var(--lane, var(--ui-accent)), 0 0 22px ${mix('var(--lane, var(--ui-accent))', 22)}; }
+.chm-name { font-size: 1rem; font-weight: 650; margin: 0; overflow-wrap: anywhere; }
+.chm-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; min-width: 0; }
+.chm-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem; margin: 0; }
+.chm-field { display: grid; gap: 0.1875rem; font-size: 0.6875rem; }
+.chm-input { font: inherit; font-size: 0.8125rem; color: var(--chm-ink); background: var(--ui-bg-input, transparent); border: 1px solid var(--chm-soft);
+  border-radius: 7px; padding: 0.3125rem 0.5rem; min-width: 0; color-scheme: light dark; }
+.chm-input:focus-visible { outline: 2px solid var(--chm-ink); outline-offset: 1px; }
+.chm-clash { border-left: 3px solid var(--ui-red); padding: 0.125rem 0 0.125rem 0.5rem; font-size: 0.8125rem; }
+.chm-clash[data-kind='busy'] { border-left-color: var(--ui-yellow); border-left-style: dashed; }
+.chm-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; }
+.chm-row { display: flex; align-items: center; gap: 0.5rem; width: 100%; box-sizing: border-box; min-width: 0; padding: 0.375rem 0.5rem; border-radius: 9px; border: 1px solid var(--chm-line);
+  background: transparent; color: var(--chm-ink); font: inherit; font-size: 0.8125rem; text-align: left; cursor: pointer; touch-action: none; }
+.chm-row:hover, .chm-row[data-sel='1'] { border-color: var(--lane, var(--ui-accent)); background: ${mix('var(--lane, var(--ui-accent))', 10)}; }
+.chm-row[data-dim='1'] { opacity: 0.3; }
+.chm-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chm-entry { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.75rem; padding: 0.1875rem 0; min-width: 0; }
+.chm-entry time { flex: 0 0 auto; font-family: var(--chm-mono); white-space: nowrap; }
+.chm-entry span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.chm-entry[data-owner='1'] span { font-weight: 600; }
+.chm-agenda { display: grid; gap: 0.375rem; }
+.chm-agenda h3 { font-family: var(--chm-display); font-size: 0.6875rem; letter-spacing: 0.12em; text-transform: uppercase; margin: 0.375rem 0 0; }
+.chm-id { font-family: var(--chm-mono); font-size: 0.6875rem; user-select: all; }
+@keyframes chm-spin { to { transform: rotate(360deg); } }
+@keyframes chm-pulse { 0%, 100% { opacity: 0.62; } 50% { opacity: 1; } }
+@keyframes chm-sheen { from { background-position: 110% 0; } to { background-position: -110% 0; } }
+@keyframes chm-rise { from { opacity: 0; transform: translateY(3px); } }
+@keyframes chm-spark { to { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .chm *, .chm *::before, .chm *::after { animation: none !important; transition: none !important; } }
+`
+
+/** jsx() for one child, jsxs() for several: the calls an uncompiled plugin writes by hand. */
+const el = (type, props, ...children) =>
+  children.length > 1 ? jsxs(type, { ...props, children }) : jsx(type, { ...props, children: children[0] })
+
+const icon = (name, size = 12) => jsx(Codicon, { name, size })
+
+const PHASE_ICON = {
+  planned: 'clock',
+  due: 'watch',
+  waiting: 'debug-step-over',
+  running: 'play',
+  done: 'check',
+  missed: 'warning',
+  failed: 'warning',
+  gone: 'question',
+  unplanned: 'circle-outline'
+}
+
+const FACT_ICON = { running: 'play', clash: 'zap', busy: 'person', attention: 'warning', planned: 'clock', tray: 'inbox' }
+
+// ── the astrolabe and the sigils ────────────────────────────────────────────
+
+function star(points, outer, inner, turn) {
+  const path = []
+
+  for (let i = 0; i < points * 2; i += 1) {
+    const radius = i % 2 ? inner : outer
+    const angle = (Math.PI * i) / points + turn
+
+    path.push(`${i ? 'L' : 'M'}${(Math.sin(angle) * radius).toFixed(2)} ${(-Math.cos(angle) * radius).toFixed(2)}`)
+  }
+
+  return `${path.join(' ')} Z`
+}
+
+/** The page's clock: a small astrolabe whose hands show the plugin's time. */
+function Astrolabe({ data, size = 58 }) {
+  const local = new Date((nowOf(data) + (Number(data.utc_offset_s) || 0)) * 1000)
+  const minutes = local.getUTCMinutes()
+  const hours = (local.getUTCHours() % 12) + minutes / 60
+  const line = { stroke: 'currentColor', strokeLinecap: 'round', fill: 'none' }
+  const marks = []
+
+  for (let i = 0; i < 12; i += 1) {
+    marks.push(jsx('line', { ...line, x1: 0, y1: -27, x2: 0, y2: i % 3 ? -24.5 : -22.5, strokeWidth: i % 3 ? 0.8 : 1.4, transform: `rotate(${i * 30})` }, i))
+  }
 
   return el(
-    'defs',
-    {},
-    jsx('pattern', { id: 'cw-hatch', patternUnits: 'userSpaceOnUse', width: 6, height: 6, patternTransform: 'rotate(45)', children: line('secondary') }),
-    jsx('pattern', { id: 'cw-hatch-warn', patternUnits: 'userSpaceOnUse', width: 7, height: 6, patternTransform: 'rotate(-45)', children: line('yellow') })
+    'svg',
+    { className: 'chm-astro', width: size, height: size, viewBox: '-30 -30 60 60', 'aria-hidden': true },
+    jsx('circle', { ...line, r: 28.5, strokeWidth: 1 }),
+    jsx('g', { children: marks }),
+    el(
+      'g',
+      { className: 'chm-spin' },
+      jsx('circle', { ...line, r: 18.5, strokeWidth: 0.7, strokeDasharray: '1.5 3.2' }),
+      jsx('path', { ...line, d: star(7, 18.5, 8.5, 0), strokeWidth: 0.6, opacity: 0.75 })
+    ),
+    jsx('line', { ...line, x1: 0, y1: 2.5, x2: 0, y2: -12, strokeWidth: 2, transform: `rotate(${hours * 30})` }),
+    jsx('line', { ...line, x1: 0, y1: 3, x2: 0, y2: -20, strokeWidth: 1.2, transform: `rotate(${minutes * 6})` }),
+    jsx('path', { d: star(4, 4.2, 1.6, 0), fill: 'currentColor' })
   )
 }
 
-/** One bar: a focusable button with its own focus ring (drawn, so it shows in every theme). */
-function Bar({ bar, box, label, labelAt, view }) {
-  const t = usePluginI18n(ID)
-  const { w, p, kind } = bar
-  const lit = view.active === w.id || Boolean(view.mark && view.mark.ids.includes(w.id))
-  const dim = Boolean(view.mark) && !view.mark.ids.includes(w.id)
-  const rel = relative(t, w, p, view.now)
-  const pick = () => view.pick(w.id)
+/** One profile's mark: a star whose points and turn come from the profile's name. */
+function Sigil({ name, size = 16 }) {
+  const seed = hash(name || '-')
+  const points = 3 + (seed % 5)
 
   return el(
-    'g',
-    {
-      role: 'button',
-      tabIndex: 0,
-      'aria-label': t('runway.bar', w.name, t(`state.${p}`), w.span, rel),
-      'data-bar': w.id,
-      'data-kind': kind,
-      'data-lit': lit ? 'yes' : 'no',
-      style: { cursor: 'pointer', outline: 'none', opacity: dim ? 0.35 : 1 },
-      onClick: pick,
-      onKeyDown: event => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          pick()
-        }
-      },
-      onFocus: () => view.hover(w.id),
-      onBlur: () => view.hover(null),
-      onMouseEnter: () => view.hover(w.id),
-      onMouseLeave: () => view.hover(null)
-    },
-    lit
-      ? jsx('rect', { x: box.x - 3, y: box.y - 3, width: box.width + 6, height: box.height + 6, rx: 5, style: { fill: C.none, stroke: C.primary, strokeWidth: 2 } })
+    'svg',
+    { className: 'chm-sigil', width: size, height: size, viewBox: '-10 -10 20 20', 'aria-hidden': true },
+    jsx('circle', { r: 8.6, fill: 'none', stroke: 'currentColor', strokeWidth: 1.1 }),
+    jsx('path', { d: star(points, 7, 3, ((seed >> 4) % 6) / 6), fill: 'currentColor', opacity: 0.9 })
+  )
+}
+
+// ── the header ──────────────────────────────────────────────────────────────
+
+function Header({ data, horizon, setHorizon, t }) {
+  const facts = data.summary.facts.map(fact =>
+    el('li', { className: 'chm-fact', 'data-kind': fact.kind, key: fact.kind }, icon(FACT_ICON[fact.kind] || 'circle-outline'), fact.text)
+  )
+
+  return el(
+    'header',
+    { className: 'chm-head' },
+    jsx(Astrolabe, { data }),
+    el(
+      'div',
+      { className: 'chm-titles' },
+      jsx('h1', { className: 'chm-title', children: t('title') }),
+      jsx('p', { className: 'chm-headline', children: data.summary.headline }),
+      facts.length ? jsx('ul', { className: 'chm-facts', children: facts }) : null
+    ),
+    el(
+      'div',
+      { className: 'chm-side' },
+      jsx('div', {
+        className: 'chm-seg',
+        role: 'group',
+        'aria-label': t('horizon.label'),
+        children: HORIZONS.map(key =>
+          jsx('button', { type: 'button', 'aria-pressed': horizon === key, onClick: () => setHorizon(key), children: t(`horizon.${key}`) }, key)
+        )
+      }),
+      jsx('p', { className: 'chm-quiet', children: `${data.now_text} ${data.zone} · ${data.horizon.label}` })
+    )
+  )
+}
+
+function Filters({ data, lanes, filters, setFilters, t }) {
+  const toggle = (kind, value) => {
+    const next = new Set(filters[kind])
+
+    if (next.has(value)) {
+      next.delete(value)
+    } else {
+      next.add(value)
+    }
+
+    setFilters({ ...filters, [kind]: next })
+  }
+
+  const chips = [
+    ...lanes.map(lane =>
+      el(
+        'button',
+        {
+          type: 'button',
+          className: 'chm-chip',
+          style: { '--lane': lane.color },
+          'aria-pressed': !filters.profiles.has(lane.profile),
+          'data-off': filters.profiles.has(lane.profile) ? '1' : '0',
+          onClick: () => toggle('profiles', lane.profile),
+          key: `p:${lane.profile}`
+        },
+        jsx(Sigil, { name: lane.profile, size: 13 }),
+        lane.profile ? lane.label : t('noProfile')
+      )
+    ),
+    ...data.labels.map(label =>
+      el(
+        'button',
+        {
+          type: 'button',
+          className: 'chm-chip',
+          'aria-pressed': filters.labels.has(label.name),
+          title: label.exclusive ? `${label.description || label.name}: ${t('filter.oneAtATime')}` : label.description || label.name,
+          onClick: () => toggle('labels', label.name),
+          key: `l:${label.name}`
+        },
+        icon(label.exclusive ? 'lock' : 'tag', 11),
+        label.name
+      )
+    )
+  ]
+  const active = filters.profiles.size || filters.labels.size || filters.clashes
+
+  return el(
+    'div',
+    { className: 'chm-filters', role: 'group', 'aria-label': t('filter.label') },
+    ...chips,
+    data.counts.clashes
+      ? el(
+          'button',
+          { type: 'button', className: 'chm-chip', 'aria-pressed': filters.clashes, onClick: () => setFilters({ ...filters, clashes: !filters.clashes }) },
+          icon('zap', 11),
+          t('filter.clashes')
+        )
       : null,
-    jsx('rect', { ...box, rx: 3, style: { ...BAR_PAINT[kind], ...BAR_MOTION } }),
-    label
-      ? text({ ...labelAt, style: svgText(11, 'primary', { fontWeight: kind === 'open' ? 700 : 500 }) }, label)
+    active
+      ? jsx('button', {
+          type: 'button',
+          className: 'chm-plain',
+          style: { fontSize: '0.75rem', textDecoration: 'underline' },
+          onClick: () => setFilters({ profiles: new Set(), labels: new Set(), clashes: false }),
+          children: t('filter.clear')
+        })
       : null
   )
 }
 
-const DAY_HEAD = 18 // the day label
-const TICKS = 16 // hour labels
-const LANE = 22
-const STRIP = 16 // under the lanes: overlap and night labels
-const CHAR = 6.9 // width of one 11px label character (a monospace theme is the widest), for lane packing
+// ── the loom ────────────────────────────────────────────────────────────────
 
-function WideDay({ day, index, top, width, view, data }) {
-  const t = usePluginI18n(ID)
-  const x = ts => ((ts - day.start) / (day.end - day.start)) * width
-  const bars = barsOf(data, view.now, day)
-
-  for (const bar of bars) {
-    const name = cut(bar.w.name, 30)
-    const x0 = x(bar.from)
-    const barWidth = Math.max(5, x(bar.to) - x0)
-    const room = name.length * CHAR + 10
-
-    bar.name = name
-    bar.box = { x: x0, width: barWidth }
-    bar.flip = x0 + barWidth + room > width && x0 - room >= 0
-    bar.extent = bar.flip ? [x0 - room, x0 + barWidth + 4] : [x0, x0 + barWidth + room]
-  }
-
-  const lanes = pack(bars, bar => bar.extent)
-  const trackTop = top + DAY_HEAD + TICKS
-  const trackHeight = lanes * LANE + 6 + STRIP
-  const today = view.now >= day.start && view.now < day.end
-  const needle = today ? x(view.now) : -100
-  const parts = []
-
-  parts.push(text({ key: 'day', x: 0, y: top + 12, style: svgText(12, 'primary', { fontWeight: 600 }) }, t(index ? 'runway.tomorrow' : 'runway.today', day.label)))
-  parts.push(jsx('rect', { key: 'track', x: 0, y: trackTop, width, height: trackHeight, rx: 6, style: { fill: C.none, stroke: C.stroke } }))
-
-  for (const [from, to] of NIGHT) {
-    parts.push(jsx('rect', { key: `night${from}`, 'data-band': 'night', x: (from / 24) * width, y: trackTop, width: ((to - from) / 24) * width, height: trackHeight, style: { fill: C.primary, fillOpacity: 0.07 } }))
-  }
-
-  parts.push(text({ key: 'nightLabel', x: 5, y: trackTop + trackHeight - 5, style: svgText(10, 'primary') }, t('runway.night')))
-
-  const step = width / 24 >= 22 ? 3 : 6
-
-  for (let hour = 0; hour <= 24; hour += 1) {
-    const at = (hour / 24) * width
-
-    parts.push(jsx('line', { key: `tick${hour}`, x1: at, x2: at, y1: trackTop - (hour % step ? 3 : 5), y2: trackTop, style: { stroke: C.secondary } }))
-
-    if (hour % step === 0 && Math.abs(at - needle) > 44) {
-      parts.push(text({ key: `hour${hour}`, x: at, y: trackTop - 7, textAnchor: hour === 0 ? 'start' : hour === 24 ? 'end' : 'middle', style: svgText(10, 'primary', { fontFamily: MONO }) }, two(hour)))
-    }
-  }
-
-  for (const band of bandsOf(data, day)) {
-    const x0 = x(band.from)
-    const bandWidth = Math.max(4, x(band.to) - x0)
-    const strong = Boolean(view.mark && band.ids.every(id => view.mark.ids.includes(id)))
-    const right = x0 + 96 > width
-    // The band covers the lanes of its two windows, so it does not run over other labels.
-    const own = bars.filter(bar => band.ids.includes(bar.w.id)).map(bar => bar.lane)
-    const firstLane = own.length ? Math.min(...own) : 0
-    const lastLane = own.length ? Math.max(...own) : lanes - 1
-    const bandTop = trackTop + 2 + firstLane * LANE
-    const bandHeight = (lastLane - firstLane + 1) * LANE - 2
-
-    parts.push(
-      el(
-        'g',
-        { key: `band${band.key}`, role: 'img', 'aria-label': band.pair, 'data-band': 'overlap', 'data-strong': strong ? 'yes' : 'no' },
-        jsx('rect', { x: x0, y: bandTop, width: bandWidth, height: bandHeight, style: { fill: C.hatchWarn, fillOpacity: strong ? 1 : 0.7, stroke: C.secondary, strokeWidth: strong ? 2 : 1, strokeDasharray: strong ? undefined : '3 3' } }),
-        jsx('line', { x1: x0, x2: x0, y1: bandTop + bandHeight, y2: trackTop + trackHeight - 14, style: { stroke: C.secondary, strokeDasharray: '2 2' } }),
-        text({ x: right ? x0 + bandWidth : x0, y: trackTop + trackHeight - 5, textAnchor: right ? 'end' : 'start', style: svgText(10, 'primary', { fontWeight: 600 }) }, `⚠ ${band.note}`)
-      )
-    )
-  }
-
-  for (const bar of bars) {
-    const y = trackTop + 5 + bar.lane * LANE
-
-    parts.push(
-      jsx(Bar, {
-        bar,
-        view,
-        box: bar.kind === 'open' ? { ...bar.box, y: y - 2, height: 18 } : { ...bar.box, y, height: 14 },
-        label: bar.name,
-        labelAt: { x: bar.flip ? bar.box.x - 5 : bar.box.x + bar.box.width + 5, y: y + 11, textAnchor: bar.flip ? 'end' : 'start' }
-      }, `bar${bar.w.id}`)
-    )
-  }
-
-  if (today) {
-    const labelX = Math.max(30, Math.min(width - 30, needle))
-
-    parts.push(
-      el(
-        'g',
-        { key: 'needle', 'data-needle': hm(day, view.now), 'aria-hidden': true },
-        jsx('line', { x1: needle, x2: needle, y1: trackTop - 4, y2: trackTop + trackHeight, style: { stroke: C.primary, strokeWidth: 1.5 } }),
-        jsx('path', { d: `M ${needle - 4} ${trackTop - 5} L ${needle + 4} ${trackTop - 5} L ${needle} ${trackTop + 1} Z`, style: { fill: C.accent, stroke: C.primary, strokeWidth: 1 } }),
-        text({ x: labelX, y: trackTop - 8, textAnchor: 'middle', style: svgText(10, 'primary', { fontWeight: 700, fontFamily: MONO }) }, t('runway.now', hm(day, view.now)))
-      )
-    )
-  }
-
-  return { height: DAY_HEAD + TICKS + trackHeight, node: jsx('g', { 'data-day': index, children: parts }, `day${index}`) }
+function barLabel(item, t) {
+  return t('loom.bar', [
+    item.title,
+    t(`phase.${item.phase}`),
+    item.when,
+    item.pinned ? t('mark.pinned') : '',
+    item.clash ? t('mark.clash') : item.busy ? t('mark.busy') : '',
+    item.overrun_s ? t('mark.over') : ''
+  ])
 }
 
-const HOUR = 22 // ladder: one hour
-const TIME_COL = 44
+function Sparks({ seed, at }) {
+  const sparks = []
 
-function LadderDay({ day, index, top, width, view, data }) {
-  const t = usePluginI18n(ID)
-  const bars = barsOf(data, view.now, day)
-  const today = view.now >= day.start && view.now < day.end
-  const hourOf = ts => ((ts - day.start) / (day.end - day.start)) * 24
-  const marks = bars.map(bar => hourOf(bar.from)).concat(today ? [hourOf(view.now)] : [])
-  const first = Math.max(0, Math.floor(Math.min(...marks, 24)) - 1)
-  const last = today ? 24 : Math.min(24, Math.ceil(Math.max(...bars.map(bar => hourOf(bar.to)), first + 2)) + 1)
-  const bodyTop = top + DAY_HEAD + 6
-  const y = ts => bodyTop + (Math.max(first, Math.min(last, hourOf(ts))) - first) * HOUR
-  const height = (last - first) * HOUR
-  const lanes = pack(bars, bar => [bar.from, bar.to])
-  const labelX = TIME_COL + 8 + lanes * 16
-  const bands = bandsOf(data, day)
-  const room = Math.max(6, Math.floor((width - labelX - 4) / CHAR))
-  const parts = []
-  // Where each label sits. An overlap note takes its own line under the labels of its two windows,
-  // so the names keep the whole width.
-  const labelAt = {}
-  const noteAt = {}
-  let lastLabel = -100
+  for (let i = 0; i < 12; i += 1) {
+    const angle = (Math.PI * 2 * i) / 12 + (seed % 7) / 7
+    const reach = 26 + ((seed >> (i % 8)) & 15)
 
-  for (const bar of bars) {
-    let labelY = Math.max(y(bar.from) + 10, lastLabel + 13)
+    sparks.push(
+      jsx('i', { className: 'chm-spark', style: { left: at, '--dx': `${(Math.cos(angle) * reach).toFixed(0)}px`, '--dy': `${(Math.sin(angle) * reach).toFixed(0)}px`, animationDelay: `${(i % 4) * 0.04}s` } }, i)
+    )
+  }
 
-    // Keep the label clear of the needle, which would strike it through.
-    if (today && Math.abs(labelY - 4 - y(view.now)) < 8) {
-      labelY = y(view.now) + 13
-    }
+  return sparks
+}
 
-    labelAt[bar.w.id] = lastLabel = labelY
+function Bar({ bar, lane, view, t }) {
+  const { item } = bar
+  const { layout, selected, drag, burst, filters } = view
+  const top = lane.top + LANE_PAD + bar.row * (ROW_H + ROW_GAP)
+  const dragging = Boolean(drag && drag.active && drag.id === item.task_id)
+  const partner = Boolean(selected && selected !== item.task_id && item.clashes.some(c => c.kind === 'clash' && c.with === selected))
+  const inside = !bar.tag && bar.w >= INSIDE
+  const marks = []
 
-    for (const band of bands) {
-      if (noteAt[band.key] === undefined && band.ids.every(id => labelAt[id] !== undefined)) {
-        noteAt[band.key] = lastLabel = lastLabel + 13
+  if (!bar.shift) {
+    for (const clash of item.clashes) {
+      if (clash.kind === 'clash') {
+        const from = Math.max(0, layout.x(Math.max(clash.start, item.start)) - bar.x)
+        const width = Math.min(bar.w, layout.x(Math.min(clash.end, item.end)) - bar.x) - from
+
+        if (width > 1) {
+          marks.push(jsx('i', { className: 'chm-hatch', style: { left: from, width } }, `c:${clash.with}`))
+        }
       }
     }
-  }
 
-  parts.push(text({ key: 'day', x: 0, y: top + 12, style: svgText(12, 'primary', { fontWeight: 600 }) }, t(index ? 'runway.tomorrow' : 'runway.today', day.label)))
-
-  for (const [from, to] of NIGHT) {
-    const a = Math.max(first, from)
-    const b = Math.min(last, to)
-
-    if (b > a) {
-      parts.push(jsx('rect', { key: `night${from}`, 'data-band': 'night', x: TIME_COL, y: bodyTop + (a - first) * HOUR, width: width - TIME_COL, height: (b - a) * HOUR, style: { fill: C.primary, fillOpacity: 0.07 } }))
+    if (item.overrun_s) {
+      marks.push(jsx('i', { className: 'chm-over', style: { left: Math.max(0, layout.x(item.end - item.overrun_s) - bar.x), right: 0 } }, 'over'))
     }
   }
 
-  for (let hour = first; hour <= last; hour += 1) {
-    const at = bodyTop + (hour - first) * HOUR
-
-    parts.push(jsx('line', { key: `rule${hour}`, x1: TIME_COL, x2: width, y1: at, y2: at, style: { stroke: C.stroke } }))
-    parts.push(text({ key: `hour${hour}`, x: TIME_COL - 6, y: at + 3.5, textAnchor: 'end', style: svgText(10, 'primary', { fontFamily: MONO }) }, `${two(hour)}:00`))
-  }
-
-  for (const band of bands) {
-    const y0 = y(band.from)
-    const strong = Boolean(view.mark && band.ids.every(id => view.mark.ids.includes(id)))
-
-    parts.push(
-      el(
-        'g',
-        { key: `band${band.key}`, role: 'img', 'aria-label': band.pair, 'data-band': 'overlap', 'data-strong': strong ? 'yes' : 'no' },
-        jsx('rect', { x: TIME_COL + 2, y: y0, width: labelX - TIME_COL - 5, height: Math.max(4, y(band.to) - y0), style: { fill: C.hatchWarn, fillOpacity: strong ? 1 : 0.7, stroke: C.secondary, strokeWidth: strong ? 2 : 1, strokeDasharray: strong ? undefined : '3 3' } }),
-        text({ x: labelX, y: noteAt[band.key] === undefined ? y0 + 11 : noteAt[band.key], 'data-note': 'own-line', style: svgText(10, 'primary', { fontWeight: 600 }) }, `⚠ ${band.note}`)
-      )
-    )
-  }
-
-  for (const bar of bars) {
-    const y0 = y(bar.from)
-    const labelY = labelAt[bar.w.id]
-
-    parts.push(
-      jsx(Bar, {
-        bar,
-        view,
-        box: { x: TIME_COL + (bar.kind === 'open' ? 4 : 6) + bar.lane * 16, y: y0, width: bar.kind === 'open' ? 14 : 10, height: Math.max(6, y(bar.to) - y0) },
-        label: `${hm(day, bar.from)} ${cut(bar.w.name, Math.max(4, room - 6))}`,
-        labelAt: { x: labelX, y: labelY, textAnchor: 'start' }
-      }, `bar${bar.w.id}`)
-    )
-  }
-
-  if (today) {
-    const at = y(view.now)
-
-    parts.push(
-      el(
-        'g',
-        { key: 'needle', 'data-needle': hm(day, view.now), 'aria-hidden': true },
-        jsx('line', { x1: TIME_COL - 4, x2: width, y1: at, y2: at, style: { stroke: C.primary, strokeWidth: 1.5 } }),
-        jsx('path', { d: `M ${TIME_COL - 5} ${at - 4} L ${TIME_COL - 5} ${at + 4} L ${TIME_COL + 1} ${at} Z`, style: { fill: C.accent, stroke: C.primary, strokeWidth: 1 } }),
-        text({ x: width - 4, y: at - 4, textAnchor: 'end', style: svgText(10, 'primary', { fontWeight: 700, fontFamily: MONO }) }, t('runway.now', hm(day, view.now)))
-      )
-    )
-  }
-
-  return { height: Math.max(DAY_HEAD + 6 + height + 6, lastLabel - top + 8), node: jsx('g', { 'data-day': index, children: parts }, `day${index}`) }
-}
-
-function Legend() {
-  const t = usePluginI18n(ID)
-  const swatch = (key, shape) =>
-    el('li', { key, style: S.legendItem }, jsx('svg', { width: 16, height: 10, viewBox: '0 0 16 10', 'aria-hidden': true, children: shape }), t(`runway.legend.${key}`))
-  const box = style => jsx('rect', { x: 1, y: 1, width: 14, height: 8, rx: 2, style })
+  const flags = [item.pinned ? icon('pinned', 11) : null, item.clash ? icon('zap', 11) : null]
 
   return el(
-    'ul',
-    { style: S.legend },
-    swatch('open', jsx('rect', { x: 1, y: 0.5, width: 14, height: 9, rx: 2, style: { ...BAR_PAINT.open, strokeWidth: 1.5 } })),
-    swatch('approved', box(BAR_PAINT.approved)),
-    swatch('pending', box(BAR_PAINT.pending)),
-    swatch('past', box(BAR_PAINT.past)),
-    swatch('overlap', box({ fill: C.hatchWarn, stroke: C.secondary, strokeDasharray: '3 3' })),
-    swatch('night', box({ fill: C.primary, fillOpacity: 0.07, stroke: C.stroke })),
-    swatch('now', jsx('line', { x1: 8, x2: 8, y1: 0, y2: 10, style: { stroke: C.primary, strokeWidth: 1.5 } }))
+    'button',
+    {
+      type: 'button',
+      className: 'chm-bar',
+      style: { left: LANE_W + bar.x, top, width: bar.span, '--lane': lane.color },
+      title: `${item.title}\n${item.when}\n${item.line}`,
+      'aria-label': barLabel(item, t),
+      'aria-pressed': selected === item.task_id,
+      'data-phase': item.phase,
+      'data-clash': item.clash ? '1' : '0',
+      'data-partner': partner ? '1' : '0',
+      'data-sel': selected === item.task_id ? '1' : '0',
+      'data-dim': matches(item, filters) ? '0' : '1',
+      'data-move': item.can.move ? '1' : '0',
+      'data-drag': dragging ? '1' : '0',
+      onPointerDown: event => view.grab(event, item, 'move'),
+      onClick: () => view.select(item.task_id),
+      onKeyDown: event => {
+        if (item.can.move && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+          event.preventDefault()
+          void view.nudge(item, event.key === 'ArrowLeft' ? -SNAP_S : SNAP_S)
+        }
+      }
+    },
+    el(
+      'span',
+      { className: 'chm-body', style: { width: bar.w }, 'data-thin': bar.w < 30 ? '1' : '0' },
+      ...marks,
+      bar.w >= 18 ? icon(PHASE_ICON[item.phase] || 'circle-outline') : null,
+      inside ? jsx('span', { className: 'chm-bar-title', children: item.short }) : null,
+      ...(inside ? flags : [])
+    ),
+    bar.tag ? el('span', { className: 'chm-tag' }, ...flags, jsx('span', { children: item.short })) : null,
+    burst && burst.id === item.task_id ? jsx(Sparks, { seed: burst.seed, at: bar.w / 2 }, burst.seed) : null
   )
 }
 
-/** Wide: today and tomorrow as two 24-hour strips. Narrow: a vertical agenda ladder. */
-function Runway({ data, view, ladder, width }) {
-  const t = usePluginI18n(ID)
-  const days = daysOf(data)
+function Loom({ data, view, t }) {
+  const { layout, drag, clock, now } = view
+  const within = ts => ts >= layout.start && ts <= layout.end
+  const parts = []
 
-  if (!days.length) {
-    return null
+  // the sky: nights, the past, day and hour lines
+  for (const night of data.horizon.nights) {
+    parts.push(jsx('div', { className: 'chm-night', style: { left: LANE_W + layout.x(night.start), width: layout.x(night.end) - layout.x(night.start), top: HEAD_H } }, `n:${night.start}`))
   }
 
-  const span = Math.max(ladder ? 280 : 480, width || (ladder ? 358 : 960))
-  const Day = ladder ? LadderDay : WideDay
-  const nodes = []
-  let top = 0
+  if (now > layout.start) {
+    parts.push(jsx('div', { className: 'chm-past', style: { width: Math.min(layout.plot, layout.x(now)), top: HEAD_H } }, 'past'))
+  }
 
-  days.forEach((day, index) => {
-    // The ladder shows tomorrow only when something is planned there.
-    if (ladder && index && !barsOf(data, view.now, day).length) {
-      return
+  for (const day of data.horizon.days) {
+    parts.push(
+      jsx('div', {
+        className: 'chm-day-label',
+        'data-today': day.today ? '1' : '0',
+        style: { left: LANE_W + layout.x(day.start), maxWidth: Math.max(0, layout.x(day.end) - layout.x(day.start) - 8) },
+        children: day.label
+      }, `d:${day.start}`)
+    )
+  }
+
+  const gap = layout.plot / Math.max(1, data.horizon.ticks.length)
+  const every = Math.max(1, Math.ceil(44 / Math.max(1, gap)))
+
+  data.horizon.ticks.forEach((tick, index) => {
+    const left = LANE_W + layout.x(tick.ts)
+
+    parts.push(jsx('div', { className: 'chm-tick', 'data-day': tick.day ? '1' : '0', style: { left } }, `t:${tick.ts}`))
+
+    if (!tick.day && index % every === 0 && left < LANE_W + layout.plot - 30) {
+      parts.push(jsx('div', { className: 'chm-tick-label', style: { left }, children: tick.label }, `tl:${tick.ts}`))
     }
-
-    const drawn = Day({ day, index, top, width: span, view, data })
-
-    nodes.push(drawn.node)
-    top += drawn.height + 14
   })
 
-  const shown = view.active && ((data && data.windows) || []).find(w => w.id === view.active)
-  const p = shown ? phase(shown, view.now) : ''
-  const readout = shown
-    ? t('runway.readout', [shown.name, t(`state.${p}`), shown.span, relative(t, shown, p, view.now), t('scope', shown.scope)])
-    : t('runway.hint')
+  // the lanes and their bars
+  for (const lane of layout.lanes) {
+    parts.push(
+      jsx('div', {
+        className: 'chm-lane',
+        style: { top: lane.top, height: lane.height, '--lane': lane.color },
+        children: el('div', { className: 'chm-lane-name', title: lane.label }, jsx(Sigil, { name: lane.profile }), jsx('span', { children: lane.profile ? lane.label : t('noProfile') }))
+      }, `lane:${lane.profile}`)
+    )
 
-  return el(
-    'div',
-    { style: S.runway },
-    el(
-      'svg',
-      { viewBox: `0 0 ${span} ${Math.max(1, top - 14)}`, style: S.svg, role: 'group', 'aria-label': t('runway.label'), 'data-runway': ladder ? 'ladder' : 'wide' },
-      jsx(Defs, {}),
-      ...nodes
-    ),
-    jsx('p', { style: S.readout, 'data-readout': shown ? shown.id : '', children: readout }),
-    jsx(Legend, {})
-  )
-}
-
-// ── window cards ────────────────────────────────────────────────────────────
-
-const $wide = atom({ width: 0, height: 0, narrow: false }) // hosts without host.state.viewport
-
-/** The decision as a stamp: who decided where and when, in the plugin's time zone. */
-function Stamp({ w, p, data }) {
-  const t = usePluginI18n(ID)
-  const channel = w.decided_via && t(`via.${w.decided_via}`) !== `via.${w.decided_via}` ? t(`via.${w.decided_via}`) : ''
-  const at = w.decided_when ? short(w.decided_when, data) : w.decided_at ? clock(w.decided_at) : ''
-  const closed = w.closed_when ? short(w.closed_when, data) : ''
-  const lines = []
-  let icon = 'pass'
-  let idle = false
-
-  if (p === 'pending' || p === 'expired') {
-    lines.push(t(`stamp.${p}`))
-    icon = p === 'pending' ? 'watch' : 'circle-slash'
-    idle = true
-  } else if (p === 'cancelled') {
-    lines.push(t('stamp.cancelled', closed))
-    icon = 'discard'
-    idle = true
-  } else if (p === 'declined') {
-    lines.push(t('stamp.declined', channel, at))
-    icon = 'close'
-  } else {
-    lines.push(t('stamp.approved', channel, at))
-
-    if (p === 'closed') {
-      lines.push(t('stamp.closed', closed))
+    for (const bar of lane.bars) {
+      parts.push(jsx(Bar, { bar, lane, view, t }, `b:${bar.item.task_id}`))
     }
   }
 
-  return el(
-    'div',
-    { style: idle ? { ...S.stamp, ...S.stampIdle } : S.stamp, 'data-stamp': p },
-    jsx(Codicon, { name: icon, size: 12 }),
-    jsx('span', { children: lines.join(' · ') })
-  )
-}
-
-function LinkedCards({ w }) {
-  const t = usePluginI18n(ID)
-  const details = {}
-
-  for (const info of w.card_details || []) {
-    details[info.task_id] = info
+  if (!data.items.length) {
+    parts.push(jsx('p', { className: 'chm-empty', style: { top: HEAD_H + 20 }, children: t('loom.empty') }, 'empty'))
   }
 
-  const chips = (w.cards || [])
-    .map(card => card && card.task_id)
-    .filter(Boolean)
-    .map(id => {
-      const info = details[id]
+  // the needle, and the guide while something is dragged
+  if (within(now)) {
+    const left = LANE_W + layout.x(now)
 
-      return jsx(Tip, {
-        label: t('card.open', id),
-        children: el(
-          'button',
-          { type: 'button', style: S.link, 'data-card': id, onClick: () => host.navigate(BOARD_PATH) },
-          jsx(Codicon, { name: 'project', size: 12 }),
-          info ? jsx('span', { children: t('card.detail', info.title, info.status, info.assignee) }) : null,
-          jsx('span', { style: S.id, children: id })
-        )
-      }, id)
-    })
+    parts.push(jsx('div', { className: 'chm-now', style: { left } }, 'now'))
+    parts.push(jsx('div', { className: 'chm-now-label', style: { left }, children: t('now', clock(now).split(' ')[1]) }, 'now-label'))
+  }
 
-  return chips.length ? jsx('div', { style: S.row, children: chips }) : null
-}
-
-/** Each overlap as a sentence on a button: the other window by name, the shared span. */
-function OverlapChips({ w, view }) {
-  const t = usePluginI18n(ID)
-  const conflicts = w.conflicts || (w.overlaps || []).map(id => ({ id }))
-
-  if (!conflicts.length) {
-    return null
+  if (drag && drag.active && drag.start !== null && within(drag.start)) {
+    parts.push(
+      jsx('div', {
+        className: 'chm-guide',
+        style: { left: LANE_W + layout.x(drag.start) },
+        children: jsx('span', { className: 'chm-guide-label', children: t(drag.kind === 'move' ? 'loom.moveTo' : 'loom.planAt', clock(drag.start)) })
+      }, 'guide')
+    )
   }
 
   return jsx('div', {
-    style: S.row,
-    children: conflicts.map(c =>
-      el(
-        'button',
-        {
-          key: c.id,
-          type: 'button',
-          style: { ...S.link, ...S.overlapChip },
-          'data-overlap': c.id,
-          'aria-expanded': Boolean(view.conflict && view.conflict.on === w.id && view.conflict.other === c.id),
-          onClick: () => view.explain(w, c)
-        },
-        jsx(Codicon, { name: 'warning', size: 12 }),
-        jsx('span', { children: c.label || c.id })
-      )
-    )
+    className: 'chm-loom',
+    ref: view.frame,
+    role: 'group',
+    'aria-label': t('loom.label'),
+    style: { height: layout.height },
+    onClick: event => {
+      if (event.target === event.currentTarget) {
+        view.select(null)
+      }
+    },
+    children: parts
   })
 }
 
-/** Why two windows conflict, what follows, and the ways out. Shown on the card it was opened to.
- *  The title and the rows are the backend's words (overlaps.explain); this only lays them out. */
-function ConflictPanel({ w, c, view }) {
-  const t = usePluginI18n(ID)
+/** The narrow view: the same slots as a list, day by day. No dragging; the scroll has the moves. */
+function Agenda({ data, view, t }) {
+  const colors = Object.fromEntries(view.layout.lanes.map(lane => [lane.profile, lane.color]))
+  const rows = []
 
-  return el(
-    'section',
-    { style: S.panel, role: 'region', 'aria-label': c.title, 'data-conflict': `${w.id}:${c.id}` },
-    el('h3', { style: S.panelTitle }, jsx(Codicon, { name: 'warning', size: 14 }), jsx('span', { children: c.title })),
-    jsx('dl', {
-      style: S.facts,
-      children: (c.rows || []).flatMap(([label, value], index) => [
-        jsx('dt', { style: S.term, children: label }, `${index}t`),
-        jsx('dd', { style: S.fact, children: index ? value : el('span', {}, value, ' ', jsx('span', { style: S.id, children: c.id })) }, `${index}d`)
-      ])
-    }),
-    el(
-      'div',
-      { style: S.actions },
-      jsx(Button, { size: 'sm', variant: 'outline', onClick: () => view.explain(w, c), children: t('overlap.show', c.name) }),
-      jsx(Button, { size: 'sm', variant: 'text', onClick: () => view.explain(null), children: t('overlap.dismiss') })
-    )
-  )
-}
+  for (const day of data.horizon.days) {
+    const items = data.items
+      .filter(item => !view.filters.profiles.has(item.assignee))
+      .filter(item => {
+        const at = Math.max(item.start, data.horizon.start)
 
-function Actions({ w, p, approval, ask }) {
-  const t = usePluginI18n(ID)
-  const buttons = []
+        return at >= day.start && at < day.end
+      })
+      .sort((a, b) => a.start - b.start)
 
-  if (p === 'pending' && approval) {
-    buttons.push(
-      jsx(Button, { size: 'touch', onClick: () => ask(w, 'approve'), children: t('action.approve') }, 'approve'),
-      jsx(Button, { size: 'touch', variant: 'outline', onClick: () => ask(w, 'decline'), children: t('action.decline') }, 'decline')
-    )
+    if (!items.length) {
+      continue
+    }
+
+    rows.push(jsx('h3', { children: day.label }, `h:${day.start}`))
+
+    for (const item of items) {
+      rows.push(
+        el(
+          'button',
+          {
+            type: 'button',
+            className: 'chm-row',
+            style: { '--lane': colors[item.assignee] },
+            'data-sel': view.selected === item.task_id ? '1' : '0',
+            'data-dim': matches(item, view.filters) ? '0' : '1',
+            'aria-label': barLabel(item, t),
+            onClick: () => view.select(item.task_id),
+            key: item.task_id
+          },
+          jsx(Sigil, { name: item.assignee }),
+          jsx('span', { className: 'chm-id', children: view.clock(item.start).split(' ')[1] }),
+          jsx('span', { className: 'chm-row-title', children: item.short }),
+          item.clash ? icon('zap') : null,
+          item.pinned ? icon('pinned') : null,
+          jsx(Badge, { variant: 'outline', children: t(`phase.${item.phase}`) })
+        )
+      )
+    }
   }
 
-  if (p === 'approved' || p === 'waiting' || p === 'open') {
-    buttons.push(jsx(Button, { size: 'touch', variant: 'outline', onClick: () => ask(w, 'close'), children: t('action.close') }, 'close'))
-  }
-
-  return buttons.length ? jsx('div', { style: S.actions, children: buttons }) : null
+  return jsx('div', { className: 'chm-agenda', children: rows.length ? rows : jsx('p', { className: 'chm-p', children: t('loom.empty') }) })
 }
 
-function WindowCard({ w, data, view, approval, ask }) {
-  const t = usePluginI18n(ID)
-  const p = phase(w, view.now)
-  const rel = relative(t, w, p, view.now)
-  const open = view.conflict && view.conflict.on === w.id ? (w.conflicts || []).find(c => c.id === view.conflict.other) : null
-  const lit = view.spot === w.id || Boolean(view.mark && view.mark.ids.includes(w.id))
+// ── the scroll: one selected card ───────────────────────────────────────────
+
+const BADGE_VARIANT = { running: 'success', done: 'muted', missed: 'warn', failed: 'warn', gone: 'warn', due: 'warn', planned: 'default', waiting: 'default' }
+
+function Scroll({ item, data, color, view, t }) {
+  const [start, setStart] = useState(item.start_local || data.suggest_local)
+  const [minutes, setMinutes] = useState(String(item.estimate_min || data.default_estimate_min))
+  const [label, setLabel] = useState('')
+  const planned = item.planned_start !== null && item.planned_start !== undefined
+
+  useEffect(() => {
+    setStart(item.start_local || data.suggest_local)
+    setMinutes(String(item.estimate_min || data.default_estimate_min))
+  }, [item.task_id, item.start_local, item.estimate_min])
+
+  const save = event => {
+    event.preventDefault()
+
+    const estimate = Math.round(Number(minutes))
+
+    void view.run(() => api.slot(item.task_id, { start, ...(estimate > 0 ? { estimate_minutes: estimate } : {}) }), item.task_id)
+  }
+
+  const addLabel = event => {
+    event.preventDefault()
+
+    const name = label.trim()
+
+    if (name) {
+      setLabel('')
+      void view.run(() => api.tag(item.task_id, [name], []))
+    }
+  }
+
+  const known = new Set(item.labels)
+  const exclusive = new Set(data.labels.filter(l => l.exclusive).map(l => l.name))
+  const derived = new Set(data.labels.filter(l => l.derived).map(l => l.name))
 
   return el(
     'article',
-    {
-      ref: node => view.keep(w.id, node),
-      tabIndex: -1,
-      'aria-label': w.name,
-      'data-window': w.id,
-      'data-lit': lit ? 'yes' : 'no',
-      style: { ...S.card, ...(lit ? S.cardLit : null), ...(open ? S.cardWide : null) }
-    },
-    el('div', { style: S.head }, jsx(StateBadge, { p }), jsx('span', { style: S.name, children: w.name }), jsx(Badge, { variant: 'outline', children: t('scope', w.scope) })),
-    jsx('div', { style: S.meta, children: rel ? `${w.span} · ${rel}` : w.span }),
-    w.reason ? jsx('div', { style: S.reason, children: w.reason }) : null,
+    { className: 'chm-card', 'data-lit': '1', style: { '--lane': color } },
     el(
       'div',
-      { style: S.row },
-      jsx('span', { style: S.small, children: [t(w.exclusive ? 'exclusive' : 'shared'), w.proposed || ''].filter(Boolean).join(' · ') }),
-      jsx('span', { style: S.id, children: w.id }),
-      jsx(CopyButton, { appearance: 'icon', buttonSize: 'icon-xs', text: w.id, label: t('copyId') })
+      { className: 'chm-wrap' },
+      jsx(Sigil, { name: item.assignee, size: 18 }),
+      jsx('span', { className: 'chm-quiet', style: { fontWeight: 600 }, children: item.assignee || t('noProfile') }),
+      jsx(Badge, { variant: BADGE_VARIANT[item.phase] || 'outline', children: t(`phase.${item.phase}`) }),
+      item.pinned ? jsx(Badge, { variant: 'outline', children: t('mark.pinned') }) : null,
+      jsx('span', { style: { flex: '1 1 auto' } }),
+      jsx('button', { type: 'button', className: 'chm-plain', 'aria-label': t('action.close'), onClick: () => view.select(null), children: icon('close', 14) })
     ),
-    jsx(LinkedCards, { w }),
-    jsx(OverlapChips, { w, view }),
-    open ? jsx(ConflictPanel, { w, c: open, view }) : null,
-    el('div', { style: S.foot }, jsx(Stamp, { w, p, data }), jsx(Actions, { w, p, approval, ask }))
-  )
-}
-
-function Group({ name, rows, data, view, approval, ask }) {
-  const t = usePluginI18n(ID)
-
-  return el(
-    'section',
-    { style: S.section, 'data-group': name },
-    el('h2', { style: S.h2 }, t(`group.${name}`), jsx(Badge, { variant: 'muted', children: String(rows.length) })),
-    jsx('div', { style: S.cards, children: rows.map(w => jsx(WindowCard, { w, data, view, approval, ask }, w.id)) })
-  )
-}
-
-// ── the ledger ──────────────────────────────────────────────────────────────
-
-const LEDGER_GLYPH = { blocked: 'circle-slash', warned: 'warning', allowed: 'check', approved: 'pass', declined: 'close' }
-
-/** Decisions and matched calls in one log, newest first. Calls are metadata only. */
-function Ledger() {
-  const t = usePluginI18n(ID)
-  const { data } = useQuery({ queryKey: AUDIT_KEY, queryFn: fetchAudit, refetchInterval: POLL_MS })
-  const entries = []
-
-  for (const d of (data && data.decisions) || []) {
-    const channel = d.decided_via && t(`via.${d.decided_via}`) !== `via.${d.decided_via}` ? t(`via.${d.decided_via}`) : ''
-    // The row is a decision. A window closed after its approval still reads "approved in …",
-    // because the channel is where it was approved, not where it was closed.
-    const verdict = d.state === 'declined' ? 'declined' : 'approved'
-
-    entries.push({
-      key: `d:${d.window_id}:${d.decided_at}`,
-      ts: d.decided_at,
-      when: d.when || clock(d.decided_at),
-      verdict,
-      tone: 'plain',
-      line: t('ledger.row', [t('ledger.decision', t(`state.${verdict}`), channel), d.name, t('ledger.by', d.decided_by), d.state === 'closed' ? t('ledger.closedLater') : '']),
-      id: d.window_id
-    })
-  }
-
-  for (const row of (data && data.audit) || []) {
-    entries.push({
-      key: `c:${row.id}`,
-      ts: row.ts,
-      when: row.when || clock(row.ts),
-      verdict: row.verdict,
-      tone: S.glyphTone[row.verdict] ? row.verdict : 'plain',
-      line: t('ledger.row', [row.verdict, row.tool, parseList(row.scopes).join(', '), parseList(row.rule_ids).join(', ')]),
-      id: row.window_id || ''
-    })
-  }
-
-  entries.sort((a, b) => b.ts - a.ts)
-
-  const items = entries.map(entry =>
+    jsx('h3', { className: 'chm-name', children: item.title }),
+    item.when ? jsx('p', { className: 'chm-p', style: { fontFamily: 'var(--chm-mono)' }, children: `${item.when}${item.estimate ? ` · ${item.estimate}` : ''}` }) : null,
+    jsx('p', { className: 'chm-p', children: item.line }),
+    item.set_by_text ? jsx('p', { className: 'chm-quiet', children: item.set_by_text }) : null,
+    item.clashes.length
+      ? jsx('div', {
+          className: 'chm-list',
+          role: 'list',
+          'aria-label': t('scroll.clashes'),
+          children: item.clashes.map(clash =>
+            el(
+              'div',
+              { className: 'chm-clash', 'data-kind': clash.kind, role: 'listitem', key: clash.with },
+              clash.text,
+              ' ',
+              jsx('button', { type: 'button', className: 'chm-plain', style: { textDecoration: 'underline', fontSize: '0.75rem' }, onClick: () => view.select(clash.with), children: t('scroll.card', clash.with) })
+            )
+          )
+        })
+      : null,
+    item.next_free_text && item.can.move
+      ? jsx('div', {
+          children: jsx(Button, { size: 'sm', variant: 'outline', onClick: () => void view.commit(item, item.next_free), children: t('action.nextFree', item.next_free_text) })
+        })
+      : null,
+    item.can.move
+      ? el(
+          'form',
+          { className: 'chm-form', onSubmit: save },
+          el('label', { className: 'chm-field' }, t('scroll.start'), jsx('input', { className: 'chm-input', type: 'datetime-local', value: start, required: true, onChange: event => setStart(event.target.value) })),
+          el('label', { className: 'chm-field' }, t('scroll.estimate'), jsx('input', { className: 'chm-input', type: 'number', min: 1, max: 20160, style: { width: '6.5rem' }, value: minutes, onChange: event => setMinutes(event.target.value) })),
+          jsx(Button, { size: 'sm', type: 'submit', children: t(planned ? 'action.save' : 'action.plan') })
+        )
+      : null,
     el(
-      'li',
-      { key: entry.key, style: S.entry, 'data-verdict': entry.verdict },
-      jsx('span', { style: S.moment, children: entry.when }),
-      jsx('span', { style: { ...S.glyph, ...S.glyphTone[entry.tone] }, children: jsx(Codicon, { name: LEDGER_GLYPH[entry.verdict] || 'circle-outline', size: 12 }) }),
-      el('span', { style: S.line }, entry.line, entry.id ? ' ' : null, entry.id ? jsx('span', { style: S.id, children: entry.id }) : null)
+      'div',
+      { className: 'chm-wrap' },
+      item.can.now ? jsx(Button, { size: 'sm', onClick: () => view.ask(item), children: el('span', { className: 'chm-wrap' }, icon('wand'), t('action.now')) }) : null,
+      item.can.move && planned ? jsx(Button, { size: 'sm', variant: 'outline', onClick: () => void view.nudge(item, -SNAP_S), children: t('action.earlier') }) : null,
+      item.can.move && planned ? jsx(Button, { size: 'sm', variant: 'outline', onClick: () => void view.nudge(item, SNAP_S), children: t('action.later') }) : null,
+      item.can.pin ? jsx(Button, { size: 'sm', variant: 'outline', onClick: () => void view.run(() => api.pin(item.task_id, !item.pinned)), children: t(item.pinned ? 'action.unpin' : 'action.pin') }) : null,
+      item.can.clear ? jsx(Button, { size: 'sm', variant: 'outline', onClick: () => void view.run(() => api.clear(item.task_id)), children: t('action.clear') }) : null
+    ),
+    jsx('div', {
+      className: 'chm-wrap',
+      role: 'group',
+      'aria-label': t('scroll.labels'),
+      children: item.labels.length
+        ? item.labels.map(name =>
+            el(
+              'span',
+              { className: 'chm-chip', style: { cursor: 'default' }, key: name },
+              icon(exclusive.has(name) ? 'lock' : 'tag', 11),
+              name,
+              derived.has(name)
+                ? null
+                : jsx('button', { type: 'button', className: 'chm-plain', 'aria-label': t('action.remove', name), onClick: () => void view.run(() => api.tag(item.task_id, [], [name])), children: icon('close', 10) })
+            )
+          )
+        : jsx('span', { className: 'chm-quiet', children: t('scroll.noLabels') })
+    }),
+    el(
+      'form',
+      { className: 'chm-form', onSubmit: addLabel },
+      jsx('input', { className: 'chm-input', style: { flex: '1 1 10rem' }, value: label, list: 'chm-labels', placeholder: t('scroll.addLabel'), 'aria-label': t('scroll.addLabel'), onChange: event => setLabel(event.target.value) }),
+      jsx('datalist', { id: 'chm-labels', children: data.labels.filter(l => !l.derived && !known.has(l.name)).map(l => jsx('option', { value: l.name }, l.name)) }),
+      jsx(Button, { size: 'sm', variant: 'outline', type: 'submit', children: t('action.add') })
+    ),
+    el(
+      'div',
+      { className: 'chm-wrap' },
+      jsx('span', { className: 'chm-id', children: item.task_id }),
+      jsx('button', { type: 'button', className: 'chm-plain', style: { fontSize: '0.75rem', textDecoration: 'underline' }, onClick: () => host.navigate(BOARD_PATH), children: t('scroll.board') })
     )
   )
+}
+
+// ── the tray and the chronicle ──────────────────────────────────────────────
+
+function Tray({ data, view, t }) {
+  const colors = Object.fromEntries(view.layout.lanes.map(lane => [lane.profile, lane.color]))
+  const rows = data.tray.filter(item => !view.filters.profiles.has(item.assignee))
 
   return el(
     'section',
-    { style: S.section, 'data-ledger': String(items.length) },
-    jsx('h2', { style: S.h2, children: t('ledger.title') }),
-    jsx('p', { style: S.hint, children: t('ledger.hint') }),
-    items.length ? jsx('ol', { style: S.ledger, children: items }) : jsx('p', { style: S.hint, children: t('ledger.empty') })
+    { className: 'chm-section' },
+    el('h2', {}, icon('inbox', 14), t('tray.title'), jsx(Badge, { variant: 'muted', children: String(rows.length) })),
+    rows.length
+      ? jsx('ul', {
+          className: 'chm-list',
+          children: rows.map(item =>
+            jsx('li', {
+              children: el(
+                'button',
+                {
+                  type: 'button',
+                  className: 'chm-row',
+                  style: { '--lane': colors[item.assignee], cursor: item.can.move ? 'grab' : 'pointer' },
+                  title: `${item.title}\n${item.line}`,
+                  'data-sel': view.selected === item.task_id ? '1' : '0',
+                  'data-dim': matches(item, { ...view.filters, clashes: false }) ? '0' : '1',
+                  onPointerDown: event => view.grab(event, item, 'plan'),
+                  onClick: () => view.select(item.task_id)
+                },
+                jsx(Sigil, { name: item.assignee }),
+                jsx('span', { className: 'chm-row-title', children: item.short }),
+                jsx(Badge, { variant: 'outline', children: item.status })
+              )
+            }, item.task_id)
+          )
+        })
+      : jsx('p', { className: 'chm-p', children: t('tray.empty') }),
+    rows.length ? jsx('p', { className: 'chm-quiet', children: t('tray.hint') }) : null
+  )
+}
+
+const ACTOR_ICON = { owner: 'account', timer: 'watch' }
+
+function Chronicle({ data, t }) {
+  return el(
+    'section',
+    { className: 'chm-section' },
+    el('h2', {}, icon('history', 14), t('chronicle.title')),
+    data.log.length
+      ? jsx('div', {
+          role: 'log',
+          children: data.log.map(entry =>
+            el(
+              'div',
+              { className: 'chm-entry', 'data-owner': entry.by_owner ? '1' : '0', key: entry.id },
+              jsx('time', { children: entry.when }),
+              icon(ACTOR_ICON[entry.actor] || 'sparkle'),
+              jsx('span', { children: entry.text })
+            )
+          )
+        })
+      : jsx('p', { className: 'chm-p', children: t('chronicle.empty') })
   )
 }
 
 // ── the page ────────────────────────────────────────────────────────────────
 
-function ChangeWindowsPage() {
+const $wide = atom({ narrow: false })
+const NO_FILTERS = { profiles: new Set(), labels: new Set(), clashes: false }
+
+function ChronomancerPage() {
   const t = usePluginI18n(ID)
   const viewport = useValue((host.state && host.state.viewport) || $wide)
-  const query = useWindows()
-  // Every piece of page state lives here; the parts below are plain functions of it.
-  const [pending, setPending] = useState(null) // { w, action, key } while a confirm dialog is open
-  const [active, setActive] = useState(null) // the bar under the pointer or the keyboard focus
-  const [conflict, setConflict] = useState(null) // { on, other }: the explained overlap, on card `on`
-  const [spot, setSpot] = useState(null) // the card a runway bar jumped to
-  const [width, setWidth] = useState(0) // the runway's own width, so the timeline is drawn at 1:1
+  const [horizon, setHorizonState] = useState('2d')
+  const [filters, setFilters] = useState(NO_FILTERS)
+  const [selected, setSelected] = useState(null)
+  const [width, setWidth] = useState(0)
+  const [drag, setDrag] = useState(null) // { id, kind: 'move' | 'plan', active, start } while a pointer is down
+  const [moved, setMoved] = useState(null) // { id, start }: where a bar sits until the backend confirms the move
+  const [pending, setPending] = useState(null) // the card whose "cast now" dialog is open
+  const [burst, setBurst] = useState(null) // { id, seed }: sparks on a bar after a move
   const frame = useRef(null)
-  const cards = useRef({})
+  const live = useRef({})
+  const query = usePlan(horizon)
+  const data = query.data
+
+  useEffect(() => {
+    let alive = true
+
+    Promise.resolve(storage && storage.get('horizon'))
+      .then(value => {
+        if (alive && HORIZONS.includes(value)) {
+          setHorizonState(value)
+        }
+      })
+      .catch(() => {})
+
+    return () => {
+      alive = false
+    }
+  }, [])
 
   useEffect(() => {
     const node = frame.current
@@ -1233,255 +1128,237 @@ function ChangeWindowsPage() {
     observer.observe(node)
 
     return () => observer.disconnect()
-  }, [])
+  }, [Boolean(data)])
 
-  const data = query.data
-  const now = nowOf(data)
-  const approval = Boolean(data && data.approval === true)
-  const ladder = Boolean(viewport && viewport.narrow) || (width > 0 && width < 560)
+  // A confirmed plan replaces the optimistic position.
+  useEffect(() => setMoved(null), [query.dataUpdatedAt])
 
-  // One key per opened dialog: a retry inside the dialog repeats the same request.
-  const ask = (w, action) => setPending({ w, action, key: newKey() })
+  const setHorizon = key => {
+    setHorizonState(key)
 
-  const reveal = id => {
-    const node = cards.current[id]
-
-    if (node && typeof node.scrollIntoView === 'function') {
-      node.scrollIntoView({ block: 'center' })
-      node.focus({ preventScroll: true })
+    try {
+      void Promise.resolve(storage && storage.set('horizon', key)).catch(() => {})
+    } catch {
+      // storage is a convenience
     }
   }
 
-  const view = {
-    now,
-    active,
-    conflict,
-    spot,
-    mark: conflict ? { ids: [conflict.on, conflict.other] } : null,
-    hover: setActive,
-    keep: (id, node) => {
-      cards.current[id] = node
-    },
-    pick: id => {
-      setSpot(id)
-      reveal(id)
-    },
-    /** Explain the overlap of `w` with `c` on the OTHER window's card (so the click leads to it). */
-    explain: (w, c) => {
-      if (!w) {
-        setConflict(null)
+  const now = nowOf(data)
+  const shifted = moved || (drag && drag.active && drag.kind === 'move' ? drag : null)
+  const layout = useMemo(() => (data ? layoutOf(data, width || 960, filters, shifted) : null), [data, width, filters, shifted])
+  const clock = useMemo(() => (data ? clockOf(data) : null), [data && data.tz, data && data.utc_offset_s])
 
+  live.current = { layout, now }
+
+  const run = async (call, burstId) => {
+    const ok = await move(call, t('failed'))
+
+    if (ok && burstId) {
+      setBurst({ id: burstId, seed: (Date.now() & 0xffff) | 1 })
+      setTimeout(() => setBurst(null), 1100)
+    }
+
+    return ok
+  }
+
+  const commit = (item, start) => {
+    setMoved({ id: item.task_id, start })
+
+    return run(() => api.slot(item.task_id, { start }), item.task_id)
+  }
+
+  const nudge = (item, delta) => {
+    const from = item.planned_start !== null && item.planned_start !== undefined ? item.planned_start : soonest(now)
+
+    return commit(item, Math.max(soonest(now), snap(from + delta)))
+  }
+
+  /** A pointer went down on a bar or on a tray card: follow it until it comes up. */
+  const grab = (event, item, kind) => {
+    if (!item.can.move || event.button !== 0 || !live.current.layout || (viewport && viewport.narrow)) {
+      return
+    }
+
+    const originX = event.clientX
+    const origin = item.start
+    let active = false
+    let start = null
+
+    const tsAt = clientX => {
+      const { layout: l, now: at } = live.current
+      const box = frame.current && frame.current.getBoundingClientRect()
+
+      if (!box || !l) {
+        return null
+      }
+
+      if (kind === 'move') {
+        return Math.max(soonest(at), snap(origin + (clientX - originX) / l.scale))
+      }
+
+      const offset = clientX - box.left - LANE_W
+
+      return offset < 0 || offset > l.plot ? null : Math.max(soonest(at), snap(l.start + offset / l.scale))
+    }
+
+    const onMove = e => {
+      if (!active && Math.abs(e.clientX - originX) < 5) {
         return
       }
 
-      const known = ((data && data.windows) || []).some(row => row.id === c.id && (row.conflicts || []).some(x => x.id === w.id))
-      const next = known ? { on: c.id, other: w.id } : { on: w.id, other: c.id }
-
-      setConflict(next)
-      setSpot(next.on)
-      reveal(next.on)
-    }
-  }
-
-  const confirm = async () => {
-    const { w, action, key } = pending
-
-    try {
-      await rest(`/windows/${w.id}/${action}`, { method: 'POST', body: { key } })
-    } catch (error) {
-      void queryClient.invalidateQueries({ queryKey: [ID] })
-      throw new Error(errorText(error, t('failed')))
+      active = true
+      start = tsAt(e.clientX)
+      setDrag({ id: item.task_id, kind, active: true, start })
     }
 
-    host.notify({ kind: 'success', message: t(`done.${action}`) })
-    await queryClient.invalidateQueries({ queryKey: [ID] })
+    const onUp = e => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      setDrag(null)
+
+      if (!active || e.type === 'pointercancel') {
+        return
+      }
+
+      // The click that follows a drag must not select or deselect anything.
+      const swallow = click => click.stopPropagation()
+
+      window.addEventListener('click', swallow, { capture: true, once: true })
+      setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 80)
+
+      if (start !== null && start !== origin) {
+        void commit(item, start)
+      }
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }
 
   let content
 
-  if (!data) {
+  if (!data || !layout) {
     content = query.isError
       ? jsx(ErrorState, {
           title: t('loadFailed'),
           description: errorText(query.error, t('loadFailedHint')),
           children: jsx(Button, { size: 'touch', variant: 'outline', onClick: () => void query.refetch(), children: t('retry') })
         })
-      : jsx('p', { style: S.hint, children: t('loading') })
+      : jsx('p', { className: 'chm-p', children: t('loading') })
   } else {
-    const byGroup = { pending: [], approved: [], open: [], finished: [] }
+    const ladder = Boolean(viewport && viewport.narrow) || (width > 0 && width < 620)
+    const chosen = [...data.items, ...data.tray].find(item => item.task_id === selected) || null
+    const allLanes = data.lanes.map((lane, index) => ({ ...lane, color: laneColor(lane.profile, index) }))
+    const colorOf = profile => (allLanes.find(lane => lane.profile === profile) || {}).color
+    const view = { layout, now, clock, selected, drag, burst, filters, frame, grab, nudge, run, commit, select: setSelected, ask: setPending }
 
-    for (const w of data.windows || []) {
-      byGroup[groupOf(phase(w, now))].push(w)
-    }
-
-    const groups = GROUPS.filter(name => byGroup[name].length).map(name =>
-      jsx(Group, { name, rows: byGroup[name], data, view, approval, ask }, name)
-    )
-
-    content = groups.length ? groups : jsx(EmptyState, { title: t('empty'), description: t('emptyHint') })
+    content = [
+      jsx(Header, { data, horizon, setHorizon, t }, 'head'),
+      query.isError ? jsx('p', { className: 'chm-notice', role: 'status', children: t('stale') }, 'stale') : null,
+      data.board_error ? jsx('p', { className: 'chm-notice', role: 'status', children: `${t('boardDown')}: ${data.board_error}` }, 'board') : null,
+      jsx(Filters, { data, lanes: allLanes, filters, setFilters, t }, 'filters'),
+      el(
+        'section',
+        { className: 'chm-section', key: 'loom' },
+        el('h2', {}, icon('wand', 14), t('loom.title')),
+        ladder ? jsx('div', { ref: frame, children: jsx(Agenda, { data, view, t }) }) : jsx(Loom, { data, view, t }),
+        data.later.text ? jsx('p', { className: 'chm-quiet', children: data.later.text }) : null,
+        ladder ? null : jsx('p', { className: 'chm-quiet', children: t('loom.hint') })
+      ),
+      el(
+        'div',
+        { className: 'chm-two', key: 'two' },
+        el(
+          'section',
+          { className: 'chm-section' },
+          el('h2', {}, icon('book', 14), t('scroll.title')),
+          chosen ? jsx(Scroll, { item: chosen, data, color: colorOf(chosen.assignee), view, t }, chosen.task_id) : jsx('p', { className: 'chm-p', children: t('scroll.none') })
+        ),
+        jsx(Tray, { data, view, t })
+      ),
+      jsx(Chronicle, { data, t }, 'chronicle')
+    ]
   }
 
   const dialog = pending
     ? jsx(ConfirmDialog, {
         open: true,
         onClose: () => setPending(null),
-        onConfirm: confirm,
-        title: t(`confirm.${pending.action}Title`, pending.w.name),
-        description:
-          pending.action === 'approve'
-            ? t('confirm.approveBody', pending.w.scope, pending.w.span)
-            : pending.action === 'close'
-              ? t('confirm.closeBody', pending.w.scope)
-              : t('confirm.declineBody'),
-        confirmLabel: t(`action.${pending.action}`),
-        destructive: pending.action !== 'approve'
+        onConfirm: async () => {
+          const item = pending
+
+          setPending(null)
+          await run(() => api.now(item.task_id), item.task_id)
+        },
+        title: t('confirm.nowTitle'),
+        description: t('confirm.nowBody', pending.short),
+        confirmLabel: t('confirm.nowAction')
       })
     : null
 
-  return jsx('div', {
-    style: S.page,
-    children: el(
-      'div',
-      { style: S.inner },
-      el(
-        'header',
-        { style: S.hero },
-        jsx('h1', { style: S.h1, children: t('title') }),
-        data ? jsx(Door, { data }) : jsx('p', { style: S.hint, children: t('subtitle') }),
-        jsx('div', { ref: frame, style: S.runway, children: data ? jsx(Runway, { data, view, ladder, width }) : null })
-      ),
-      data && !approval ? jsx('div', { style: S.notice, role: 'status', children: t('approvalOff') }) : null,
-      data && approval ? jsx('p', { style: S.hint, children: t('trust') }) : null,
-      data && query.isError ? jsx('div', { style: S.notice, role: 'status', children: t('stale') }) : null,
-      content,
-      data ? jsx(Ledger, {}) : null,
-      dialog
-    )
-  })
+  return el('div', { className: 'chm' }, jsx('style', { children: CSS }), jsx('div', { className: 'chm-inner', children: content }), dialog)
 }
 
 // ── status-bar chip ─────────────────────────────────────────────────────────
 
-/** The door in two or three words: `closed`, `open, 37 min`, `next 14:00`. */
+// The chip lives outside the page, where the page's stylesheet is not mounted.
+const STATUS_CHIP = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '0.25rem',
+  height: '100%',
+  padding: '0 0.375rem',
+  font: 'inherit',
+  fontSize: '0.6875rem',
+  color: 'var(--ui-text-primary)',
+  background: 'transparent',
+  border: 0,
+  cursor: 'pointer',
+  whiteSpace: 'nowrap'
+}
+
 function StatusChip() {
   const t = usePluginI18n(ID)
-  const { data } = useWindows()
+  const { data } = usePlan('2d')
 
   if (!data) {
     return null
   }
 
-  const door = doorOf(data, t)
-  const { head, mode } = door
-  let label = t(mode === 'enforce' ? 'chip.closed' : `chip.${mode}`)
-
-  if (mode === 'enforce' && head.kind === 'open') {
-    label = t('chip.open', duration(t, head.seconds)) + (head.more ? t('chip.more', head.more) : '')
-  } else if (mode === 'enforce' && head.kind === 'next') {
-    label = t('chip.next', startOf(head.w, data))
-  }
-
   return jsx(Tip, {
-    label: t('chip.tip', `${door.title}. ${door.lines.join(' ')}`),
+    label: t('chipTip', data.summary.tip),
     children: el(
       'button',
-      { type: 'button', style: S.chip, onClick: () => host.navigate(PATH) },
-      jsx(Codicon, { name: door.icon, size: 12 }),
-      jsx('span', { children: label })
+      { type: 'button', style: STATUS_CHIP, onClick: () => host.navigate(PATH) },
+      icon(data.counts.clashes ? 'zap' : 'wand'),
+      jsx('span', { children: data.summary.chip })
     )
   })
 }
 
-// ── Kanban card badges ──────────────────────────────────────────────────────
-
-const BADGE_RANK = ['open', 'waiting', 'approved', 'pending', 'ended', 'closed', 'declined', 'expired', 'cancelled']
-const BADGE_TONE = { open: 'green', waiting: 'yellow', approved: 'blue', pending: 'yellow' }
-
-/** task id → one badge, for the card's most relevant window (an open one wins over a finished one). */
-function cardBadges(data, t) {
-  const now = nowOf(data)
-  const best = {}
-
-  for (const w of (data && data.windows) || []) {
-    const p = phase(w, now)
-    const rank = BADGE_RANK.indexOf(p)
-
-    for (const card of w.cards || []) {
-      const id = card && card.task_id
-
-      if (id && rank >= 0 && (!best[id] || rank < best[id].rank || (rank === best[id].rank && w.start_ts < best[id].w.start_ts))) {
-        best[id] = { rank, p, w }
-      }
-    }
-  }
-
-  const badges = {}
-
-  for (const [id, { p, w }] of Object.entries(best)) {
-    let label = t(`badge.${p}`)
-
-    if (p === 'open') {
-      label = t('badge.open', duration(t, w.end_ts - now))
-    } else if (p === 'approved') {
-      label = t('badge.approved', startOf(w, data))
-    } else if (p === 'pending') {
-      label = w.start_ts > now ? t('badge.pending', startOf(w, data)) : t('badge.pendingNow')
-    }
-
-    badges[id] = { label, tone: BADGE_TONE[p] || 'neutral', tooltip: `${w.name} · ${w.span} · ${w.id}` }
-  }
-
-  return badges
-}
-
-// ── the plugin ──────────────────────────────────────────────────────────────
-
 export default {
   id: ID,
-  name: 'Change windows',
+  name: 'Chronomancer',
   register(ctx) {
     rest = ctx.rest
+    storage = ctx.storage || null
     ctx.i18n.register({ en: EN })
 
     const t = ctx.i18n.t
 
     ctx.registerMany([
-      { id: 'page', area: ROUTES_AREA, title: t('title'), data: { path: PATH }, render: () => jsx(ChangeWindowsPage, {}) },
-      { id: 'nav', area: SIDEBAR_NAV_AREA, data: { path: PATH, label: t('title'), codicon: 'calendar' } },
+      { id: 'page', area: ROUTES_AREA, title: t('title'), data: { path: PATH }, render: () => jsx(ChronomancerPage, {}) },
+      { id: 'nav', area: SIDEBAR_NAV_AREA, data: { path: PATH, label: t('title'), codicon: 'wand' } },
       { id: 'chip', area: STATUSBAR_AREAS.right, order: 140, render: () => jsx(StatusChip, {}) },
       {
         id: 'open',
         area: PALETTE_AREA,
-        data: { id: `${ID}.open`, label: t('open'), keywords: ['change', 'window', 'approve', 'maintenance'], run: () => host.navigate(PATH) }
+        data: { id: `${ID}.open`, label: t('open'), keywords: ['plan', 'slot', 'kanban', 'timeline', 'schedule', 'clash'], run: () => host.navigate(PATH) }
       }
     ])
 
-    // Card badges are a pure lookup, so they are rebuilt from each poll result (the status-bar
-    // chip and the page keep the query polling) and registered again only when a label changes.
-    let painted = ''
-
-    const paint = data => {
-      const badges = cardBadges(data, t)
-      const signature = JSON.stringify(badges)
-
-      if (signature === painted) {
-        return
-      }
-
-      painted = signature
-      ctx.register({ id: 'window', area: KANBAN_CARD_AREAS.badges, data: { decorate: card => badges[card.id] || null } })
-    }
-
-    ctx.onDispose(
-      queryClient.getQueryCache().subscribe(event => {
-        const key = event && event.query && event.query.queryKey
-
-        if (event.type === 'updated' && Array.isArray(key) && key[0] === ID && key[1] === 'windows' && event.query.state.data) {
-          paint(event.query.state.data)
-        }
-      })
-    )
-
-    queryClient.prefetchQuery({ queryKey: WINDOWS_KEY, queryFn: fetchWindows }).catch(() => {})
+    queryClient.prefetchQuery({ queryKey: planKey('2d'), queryFn: () => fetchPlan('2d') }).catch(() => {})
   }
 }

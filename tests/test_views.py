@@ -85,13 +85,16 @@ def busy_plan(planner, kanban, clock):
 def test_the_page_gets_lanes_items_tray_labels_counts_and_log(busy_plan):
     view = views.owner_view(busy_plan, horizon_key="day")
     assert (view["now"], view["now_text"], view["zone"], view["board"], view["board_error"]) == (NOW, "Wed 11 Nov 10:00", "CET", "", "")
+    assert (view["tz"], view["utc_offset_s"], view["suggest_local"], view["default_estimate_min"]) == (
+        "Europe/Prague", 3600, "2026-11-11T11:00", 60)
     assert view["horizon"]["key"] == "day"
     assert view["lanes"] == [{"profile": "", "label": "No profile", "slots": 0},
                              {"profile": "builder", "label": "builder", "slots": 1},
                              {"profile": "keeper", "label": "keeper", "slots": 1}]
     assert [i["task_id"] for i in view["items"]] == ["t_a", "t_b"]
     assert [i["task_id"] for i in view["tray"]] == ["t_c", "t_d"]
-    assert view["later"] == {"count": 1, "next": "Thu 19 Nov 09:00 to 10:00", "next_title": "Next week"}
+    assert view["later"] == {"count": 1, "next": "Thu 19 Nov 09:00 to 10:00", "next_title": "Next week",
+                             "text": '1 more slot after this horizon. Next: "Next week", Thu 19 Nov 09:00 to 10:00.'}
     assert view["counts"] == {"clashes": 1, "busy": 0, "planned": 2, "running": 0, "attention": 0, "tray": 2}
     assert view["labels"] == [
         {"name": "cluster:prod", "exclusive": True, "description": "the production cluster", "cards": 2, "derived": False},
@@ -107,14 +110,40 @@ def test_one_card_on_the_page(busy_plan):
         "task_id": "t_a", "title": "Upgrade ingress", "short": "Upgrade ingress", "assignee": "builder",
         "status": "blocked", "phase": "planned", "priority": 3, "model": "", "labels": ["cluster:prod", "repo:web"],
         "start": at(14), "end": at(16), "planned_start": at(14), "planned_end": at(16), "estimate_s": 2 * HOUR,
-        "estimate": "2 h", "when": "Wed 11 Nov 14:00 to 16:00", "pinned": False, "note": "",
+        "estimate_min": 120, "estimate": "2 h", "start_local": "2026-11-11T14:00",
+        "when": "Wed 11 Nov 14:00 to 16:00", "pinned": False, "note": "",
         "set_by": AGENT, "set_by_text": "Planned by profile assistant.", "line": "Starts in 4 h.", "overrun_s": 0,
         "clash": True, "busy": False,
         "clashes": [{"kind": "clash", "with": "t_b", "start": at(15), "end": at(16),
                      "text": 'Clashes with "Rotate database keys" (keeper, Wed 11 Nov 15:00 to 16:00): both carry '
                              "cluster:prod, which allows one card at a time. They overlap for 1 h."}],
+        "next_free": at(16), "next_free_text": "Wed 11 Nov 16:00",
         "can": {"move": True, "now": True, "clear": True, "pin": True}}
     assert view["items"][1]["pinned"] is True and view["items"][1]["set_by_text"] == "Planned by the owner."
+
+
+def test_the_headline_says_what_runs_next_and_what_needs_a_look(busy_plan, kanban, clock):
+    view = views.owner_view(busy_plan, horizon_key="day")
+    assert view["summary"] == {
+        "headline": 'Next: "Upgrade ingress" (builder) in 4 h, at 14:00.',
+        "facts": [{"kind": "clash", "text": "1 clash"}, {"kind": "planned", "text": "2 planned"},
+                  {"kind": "tray", "text": "2 unplanned"}],
+        "chip": "next 14:00 · 1 clash", "tip": 'Next: "Upgrade ingress" (builder) in 4 h, at 14:00.'}
+    clock.now = at(15)
+    busy_plan.run_due()
+    kanban.set("t_a", status="running", started_at=at(14))
+    kanban.set("t_b", status="running", started_at=at(15))
+    summary = views.owner_view(busy_plan, horizon_key="day")["summary"]
+    assert summary["headline"] == 'Next: "Next week" (keeper) in 7 d 18 h, at Thu 09:00.'
+    assert summary["facts"][0] == {"kind": "running", "text": "2 running"} and summary["chip"].startswith("next Thu 09:00")
+
+
+def test_the_headline_without_any_slot(planner, kanban):
+    assert views.owner_view(planner)["summary"] == {"headline": "Nothing is planned.", "facts": [], "chip": "no slots",
+                                                    "tip": "Nothing is planned."}
+    kanban.add("t_1", status="running", started_at=NOW - 60)
+    summary = views.owner_view(planner)["summary"]
+    assert (summary["headline"], summary["chip"]) == ("1 card runs now. Nothing else is planned.", "1 running")
 
 
 def test_tray_cards_say_what_happens_to_them(busy_plan):

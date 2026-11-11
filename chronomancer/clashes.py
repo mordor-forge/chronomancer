@@ -98,6 +98,9 @@ def minutes_text(seconds: int) -> str:
     hours, rest = divmod(minutes, 60)
     if not hours:
         return f"{minutes} min"
+    if hours >= 48:  # days and hours are enough from two days on
+        days, hours = divmod(hours, 24)
+        return f"{days} d" if not hours else f"{days} d {hours} h"
     return f"{hours} h" if not rest else f"{hours} h {rest} min"
 
 

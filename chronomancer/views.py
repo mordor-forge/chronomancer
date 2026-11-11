@@ -32,6 +32,11 @@ def _since(seconds: int) -> str:
     return clashes.minutes_text(abs(seconds))
 
 
+def _local(planner: Planner, ts: int) -> str:
+    """A moment as the page's date-and-time field wants it: local, to the minute, without an offset."""
+    return datetime.fromtimestamp(ts, planner.tz() or timezone.utc).strftime("%Y-%m-%dT%H:%M")
+
+
 # ---- the horizon ----
 
 def horizon(planner: Planner, key: Any, now: int) -> dict[str, Any]:
@@ -108,6 +113,10 @@ def item_view(planner: Planner, snap: Snapshot, item: Item) -> dict[str, Any]:
     status = card.status if card else ""
     found = snap.clashes_of(item.task_id)
     movable = card is not None and status not in _NOT_MOVABLE
+    free = None
+    if movable and item.phase == PLANNED_ and any(c.kind == clashes.CLASH for c in found):
+        own = next((s for s in snap.spans if s.task_id == item.task_id), None)
+        free = clashes.next_free(own, snap.spans) if own else None
     return {
         "task_id": item.task_id, "title": item.title, "short": clashes.short(item.title),
         "assignee": item.assignee, "status": status, "phase": item.phase, "priority": card.priority if card else 0,
@@ -115,7 +124,9 @@ def item_view(planner: Planner, snap: Snapshot, item: Item) -> dict[str, Any]:
         "start": item.start, "end": item.end,
         "planned_start": slot.start_ts if slot else None, "planned_end": slot.end_ts if slot else None,
         "estimate_s": slot.estimate_s if slot else None,
+        "estimate_min": slot.estimate_s // 60 if slot else None,
         "estimate": clashes.minutes_text(slot.estimate_s) if slot else "",
+        "start_local": _local(planner, slot.start_ts) if slot else "",
         "when": planner.span_text(item.start, item.end) if item.start is not None and item.end is not None else "",
         "pinned": bool(slot and slot.pinned), "note": slot.note if slot else "",
         "set_by": slot.set_by if slot else "", "set_by_text": f"Planned by {planner.who(slot.set_by)}." if slot else "",
@@ -123,6 +134,7 @@ def item_view(planner: Planner, snap: Snapshot, item: Item) -> dict[str, Any]:
         "clash": any(c.kind == clashes.CLASH for c in found), "busy": any(c.kind == clashes.BUSY for c in found),
         "clashes": [{"kind": c.kind, "with": c.other(item.task_id).task_id, "start": c.start, "end": c.end,
                      "text": planner.describe(c, item.task_id)} for c in found],
+        "next_free": free, "next_free_text": planner.fmt(free) if free is not None else "",
         "can": {"move": movable, "now": movable, "clear": slot is not None, "pin": slot is not None},
     }
 
@@ -162,6 +174,45 @@ def log_view(planner: Planner, entry: LogEntry) -> dict[str, Any]:
             "by_owner": entry.actor == OWNER, "task_id": entry.task_id, "text": log_text(planner, entry)}
 
 
+# ---- the headline ----
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def summary(planner: Planner, snap: Snapshot, counts: dict[str, int]) -> dict[str, Any]:
+    """What runs next and what needs a look, for the page header and the status-bar chip."""
+    zone = planner.tz() or timezone.utc
+    upcoming = sorted((i for i in snap.items if i.phase == PLANNED_), key=lambda i: i.start or 0)
+    running = sum(1 for i in snap.items if i.phase == RUNNING)
+    if upcoming:
+        nxt = upcoming[0]
+        at = datetime.fromtimestamp(nxt.start, zone)
+        same_day = at.date() == datetime.fromtimestamp(snap.now, zone).date()
+        when = at.strftime("%H:%M") if same_day else at.strftime("%a %H:%M")
+        headline = (f'Next: "{clashes.short(nxt.title)}" ({nxt.assignee or "no profile"}) '
+                    f"in {_since(nxt.start - snap.now)}, at {when}.")
+        chip = f"next {when}"
+    elif running:
+        headline, chip = f"{_count(running, 'card runs', 'cards run')} now. Nothing else is planned.", f"{running} running"
+    else:
+        headline, chip = "Nothing is planned.", "no slots"
+    facts = [(kind, text) for kind, n, text in (
+        ("running", running, _count(running, "running", "running")),
+        ("clash", counts["clashes"], _count(counts["clashes"], "clash", "clashes")),
+        ("busy", counts["busy"], _count(counts["busy"], "busy overlap", "busy overlaps")),
+        ("attention", counts["attention"], _count(counts["attention"], "needs a look", "need a look")),
+        ("planned", counts["planned"], _count(counts["planned"], "planned", "planned")),
+        ("tray", counts["tray"], _count(counts["tray"], "unplanned", "unplanned")),
+    ) if n]
+    if counts["clashes"]:
+        chip += f" · {_count(counts['clashes'], 'clash', 'clashes')}"
+    if counts["attention"]:
+        chip += f" · {_count(counts['attention'], 'needs a look', 'need a look')}"
+    return {"headline": headline, "facts": [{"kind": kind, "text": text} for kind, text in facts],
+            "chip": chip, "tip": headline}
+
+
 # ---- the owner's page ----
 
 def owner_view(planner: Planner, *, horizon_key: Any = DEFAULT_HORIZON, board: Optional[str] = None) -> dict[str, Any]:
@@ -179,23 +230,35 @@ def owner_view(planner: Planner, *, horizon_key: Any = DEFAULT_HORIZON, board: O
         for name in v["labels"]:
             used[name] = used.get(name, 0) + 1
     known = {label.name for label in snap.labels}
+    counts = {"clashes": sum(1 for c in pairs if c.kind == clashes.CLASH),
+              "busy": sum(1 for c in pairs if c.kind == clashes.BUSY),
+              "planned": sum(1 for v in shown if v["phase"] in (PLANNED_, DUE)),
+              "running": sum(1 for v in shown if v["phase"] == RUNNING),
+              "attention": sum(1 for v in views if v["phase"] in (MISSED_, FAILED_, GONE)),
+              "tray": len(tray)}
+    zone = planner.tz() or timezone.utc
+    local_now = datetime.fromtimestamp(snap.now, zone)
+    offset = local_now.utcoffset()
+    next_hour = local_now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    later_text = ""
+    if later:
+        later_text = (f"{_count(len(later), 'more slot', 'more slots')} after this horizon. "
+                      f'Next: "{later[0]["short"]}", {later[0]["when"]}.')
     return {
-        "now": snap.now, "now_text": planner.fmt(snap.now), "zone": datetime.fromtimestamp(snap.now, planner.tz() or timezone.utc).strftime("%Z"),
+        "now": snap.now, "now_text": planner.fmt(snap.now), "zone": local_now.strftime("%Z"),
+        "tz": getattr(zone, "key", "") or "", "utc_offset_s": int(offset.total_seconds()) if offset else 0,
+        "suggest_local": next_hour.strftime("%Y-%m-%dT%H:%M"), "default_estimate_min": planner.default_estimate_s() // 60,
         "board": snap.board, "board_error": snap.board_error, "horizon": span,
         "lanes": [{"profile": p, "label": p or "No profile",
                    "slots": sum(1 for v in shown if v["assignee"] == p)} for p in profiles],
         "items": shown, "tray": tray,
-        "later": {"count": len(later), "next": later[0]["when"] if later else "", "next_title": later[0]["short"] if later else ""},
+        "later": {"count": len(later), "next": later[0]["when"] if later else "",
+                  "next_title": later[0]["short"] if later else "", "text": later_text},
         "labels": [{"name": label.name, "exclusive": label.exclusive, "description": label.description,
                     "cards": used.get(label.name, 0), "derived": False} for label in snap.labels]
                   + [{"name": name, "exclusive": False, "description": "From the board.", "cards": count, "derived": True}
                      for name, count in sorted(used.items()) if name not in known],
-        "counts": {"clashes": sum(1 for c in pairs if c.kind == clashes.CLASH),
-                   "busy": sum(1 for c in pairs if c.kind == clashes.BUSY),
-                   "planned": sum(1 for v in shown if v["phase"] in (PLANNED_, DUE)),
-                   "running": sum(1 for v in shown if v["phase"] == RUNNING),
-                   "attention": sum(1 for v in views if v["phase"] in (MISSED_, FAILED_, GONE)),
-                   "tray": len(tray)},
+        "counts": counts, "summary": summary(planner, snap, counts),
         "log": [log_view(planner, e) for e in planner.store.log_tail(40)],
     }
 

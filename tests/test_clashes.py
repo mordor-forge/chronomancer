@@ -74,5 +74,5 @@ def test_the_sentence_names_the_other_card_the_label_and_the_overlap():
 
 def test_short_titles_and_durations():
     assert clashes.short("a" * 80) == "a" * 59 + "…"
-    assert [clashes.minutes_text(s) for s in (20, 60, 45 * 60, 3600, 5400, 7200)] == [
-        "1 min", "1 min", "45 min", "1 h", "1 h 30 min", "2 h"]
+    assert [clashes.minutes_text(s) for s in (20, 60, 45 * 60, 3600, 5400, 7200, 47 * 3600 + 600, 48 * 3600, 186 * 3600 + 900)] == [
+        "1 min", "1 min", "45 min", "1 h", "1 h 30 min", "2 h", "47 h 10 min", "2 d", "7 d 18 h"]

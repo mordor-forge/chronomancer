@@ -2,6 +2,8 @@
 
     CW_HERMES_CORE=<hermes-agent checkout> dev/scratch-env.sh python dev/contract_check.py
 
+Run it with the Python of a Hermes core (the scratch environment puts it first in PATH).
+
 The unit tests use ``tests/fake_kanban.py``. This script makes the same moves on a real board, so
 the fake cannot drift from the core unnoticed. It refuses to run outside ``dev/scratch-env.sh``:
 it creates cards.
@@ -15,6 +17,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -23,11 +26,7 @@ kanban_db = os.environ.get("HERMES_KANBAN_DB", "")
 if os.environ.get("HERMES_KANBAN_BOARD") != "scratch" or "/kanban/kanban.db" not in kanban_db:
     sys.exit("contract_check: run me through dev/scratch-env.sh (no scratch board in the environment)")
 
-try:
-    import hermes_bootstrap  # noqa: F401  (the installed core sets its import paths here)
-except ImportError:
-    pass
-import model_tools  # noqa: F401,E402  (loads the tool registry, as the gateway does)
+import tools.kanban_tools  # noqa: F401,E402  (registers kanban_* in the tool registry)
 from tools.registry import registry  # noqa: E402
 
 from chronomancer.board import Board  # noqa: E402
@@ -42,7 +41,7 @@ def check(ok: bool, what: str) -> None:
     print(("PASS  " if ok else "FAIL  ") + what)
 
 
-def dispatch(tool: str, args: dict) -> str:
+def dispatch(tool: str, args: dict) -> Any:
     return registry.dispatch(tool, args)
 
 
