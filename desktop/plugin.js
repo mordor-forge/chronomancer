@@ -421,19 +421,19 @@ const CSS = `
 .chm-past { position: absolute; bottom: 0; left: ${LANE_W}px; background: ${mix('var(--chm-ink)', 4)}; pointer-events: none; }
 .chm-now { position: absolute; top: 20px; bottom: 0; width: 2px; margin-left: -1px; pointer-events: none; z-index: 4;
   background: linear-gradient(180deg, var(--chm-arc), ${mix('var(--chm-arc)', 35)}); box-shadow: 0 0 12px 1px var(--chm-glow); animation: chm-pulse 2.6s ease-in-out infinite; }
-.chm-now-star { position: absolute; top: 12px; width: 16px; height: 16px; margin-left: -8px; color: var(--chm-arc); z-index: 5; pointer-events: none;
+.chm-now-star { position: absolute; top: 18px; width: 16px; height: 16px; margin-left: -8px; color: var(--chm-arc); z-index: 5; pointer-events: none;
   filter: drop-shadow(0 0 6px var(--chm-glow)); animation: chm-breathe 2.6s ease-in-out infinite; }
 .chm-now-label { position: absolute; top: 25px; margin-left: 9px; font-size: 0.625rem; font-family: var(--chm-mono); padding: 1px 6px;
   border-radius: 999px; color: var(--chm-ink); border: 1px solid var(--chm-arc); background: var(--chm-paper);
   white-space: nowrap; z-index: 5; pointer-events: none; }
-.chm-link { position: absolute; width: 0; border-left: 2px dashed var(--ui-red); opacity: 0.75; pointer-events: none; z-index: 2; }
+.chm-link { position: absolute; width: 0; border-left: 2px dashed var(--ui-red); opacity: 0.75; pointer-events: none; z-index: 1; }
 .chm-link[data-lit='1'] { opacity: 1; filter: drop-shadow(0 0 5px ${mix('var(--ui-red)', 80)}); }
 .chm-link > i { position: absolute; left: -10px; top: 50%; width: 18px; height: 18px; margin-top: -9px; border-radius: 50%; display: grid; place-items: center;
   color: var(--ui-red); background: var(--chm-paper); border: 1px solid var(--ui-red); box-shadow: 0 0 9px ${mix('var(--ui-red)', 55)}; }
 
 .chm-bar { position: absolute; height: ${ROW_H}px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0; border: 0;
   border-radius: 10px; background: transparent; color: var(--chm-ink); font: inherit; font-size: 0.75rem; line-height: 1; text-align: left;
-  white-space: nowrap; cursor: pointer; touch-action: none; transition: opacity 0.15s ease; animation: chm-rise 0.3s ease both; }
+  white-space: nowrap; cursor: pointer; touch-action: none; z-index: 2; transition: opacity 0.15s ease; animation: chm-rise 0.3s ease both; }
 .chm-bar[data-move='1'] { cursor: grab; }
 .chm-bar:focus-visible { outline: 2px solid var(--chm-ink); outline-offset: 2px; }
 .chm-body { position: relative; flex: 0 0 auto; height: 100%; box-sizing: border-box; border-radius: 10px; border: 1px solid var(--lane);
@@ -863,6 +863,7 @@ function Loom({ data, view, t }) {
   const { layout, drag, clock, now } = view
   const within = ts => ts >= layout.start && ts <= layout.end
   const parts = []
+  const needle = within(now) ? LANE_W + layout.x(now) : -999
 
   // the sky: nights, the past, day and hour lines
   data.horizon.nights.forEach((night, index) => {
@@ -871,9 +872,12 @@ function Loom({ data, view, t }) {
 
     parts.push(jsx('div', { className: 'chm-night', style: { left, width, top: HEAD_H } }, `n:${night.start}`))
 
-    // one moon per night: on the half before midnight, or on a night that starts the horizon
-    if (width > 26 && (index % 2 === 0 || index === 0)) {
-      parts.push(jsx(Moon, { left: left + width - 15 }, `m:${night.start}`))
+    // one moon per night: on the half before midnight, or on a night that starts the horizon.
+    // Not where the now needle and its label are.
+    const moon = left + width - 15
+
+    if (width > 26 && (index % 2 === 0 || index === 0) && (moon < needle - 22 || moon > needle + 78)) {
+      parts.push(jsx(Moon, { left: moon }, `m:${night.start}`))
     }
   })
 
@@ -894,7 +898,6 @@ function Loom({ data, view, t }) {
 
   const gap = layout.plot / Math.max(1, data.horizon.ticks.length)
   const every = Math.max(1, Math.ceil(44 / Math.max(1, gap)))
-  const needle = within(now) ? LANE_W + layout.x(now) : -999
 
   data.horizon.ticks.forEach((tick, index) => {
     const left = LANE_W + layout.x(tick.ts)
